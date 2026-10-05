@@ -28,6 +28,10 @@ on:
         description: Exact release source commit to validate
         type: string
         default: ""
+      cache-key:
+        description: Extra cache key that keeps a release rebuild's caches apart from main's
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -74,6 +78,7 @@ jobs:
       # release validation would save caches nothing else restores.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: ${{ inputs.cache-key }}
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.source-ref }}
       # Compiling the declared MSRV is what makes it a minimum: comparing
       # version strings only proves this job is not older than the claim, and
@@ -121,6 +126,7 @@ jobs:
           bash packaging/native-deps.sh "$RUNNER_TEMP/native"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: ${{ inputs.cache-key }}
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.source-ref }}
       - name: Test
         run: |
@@ -162,13 +168,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-${{ steps.image.outputs.version }}-${{ hashFiles('packaging/windows/deps.ps1', 'packaging/windows/vcpkg-ports/**') }}
+          key: vcpkg-${{ inputs.cache-key && format('{0}-', inputs.cache-key) || '' }}${{ steps.image.outputs.version }}-${{ hashFiles('packaging/windows/deps.ps1', 'packaging/windows/vcpkg-ports/**') }}
       - if: steps.source.outputs.windows == 'true'
         name: LibRaw and Little CMS
         run: packaging/windows/deps.ps1 "$env:RUNNER_TEMP\deps"
       - if: steps.source.outputs.windows == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: ${{ inputs.cache-key }}
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.source-ref }}
       - if: steps.source.outputs.windows == 'true'
         run: cargo clippy --all-targets --locked -- -D warnings
@@ -216,6 +223,7 @@ jobs:
         run: bash packaging/native-deps.sh "$RUNNER_TEMP/native"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          key: ${{ inputs.cache-key }}
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.source-ref }}
       - run: cargo clippy --all-targets --locked -- -D warnings
       # Tests that need private RAW files, camera profiles or a GPU are #[ignore]d.
@@ -240,6 +248,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target-arch"
+          key: ${{ inputs.cache-key }}
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.source-ref }}
       - name: makepkg (current checkout)
         run: |

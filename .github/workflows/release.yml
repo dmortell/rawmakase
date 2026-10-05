@@ -47,6 +47,15 @@ jobs:
           version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["package"]["version"])' "$RUNNER_TEMP/release-Cargo.toml")
           test "$RELEASE_TAG" = "v$version"
           git merge-base --is-ancestor "$sha" origin/main
+          # Every build job below checks out this commit, so a rebuild uses the
+          # tag's own dependency scripts and pins. native-packages' shared
+          # workflow is the exception: it reads its configuration and the cask
+          # template from the commit this workflow runs from, so a rebuild must
+          # not package the tag with different ones.
+          if [[ "$sha" != "$GITHUB_SHA" ]] && ! git diff --quiet "$sha" "$GITHUB_SHA" -- native-packages.yaml packaging/homebrew; then
+            echo "::error::native-packages.yaml or packaging/homebrew differs between $RELEASE_TAG and the workflow branch. Run Release from the tag itself (Use workflow from: $RELEASE_TAG)."
+            exit 1
+          fi
           {
             echo "version=$version"
             echo "tag=$RELEASE_TAG"
@@ -77,6 +86,9 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       source-ref: ${{ needs.prepare.outputs.sha }}
+      # A manual rebuild keeps its caches apart, so an older tag never
+      # restores what newer dependencies built.
+      cache-key: ${{ github.event_name == 'workflow_dispatch' && format('rebuild-{0}', needs.prepare.outputs.sha) || '' }}
 
   linux:
     name: Linux archive (${{ matrix.arch }})
@@ -99,14 +111,11 @@ jobs:
       ARCH: ${{ matrix.arch }}
       TARGET: ${{ matrix.target }}
     steps:
+      # The whole build, dependency scripts and pins included, comes from
+      # the release commit, also when a manual run rebuilds an older tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - name: Check out the exact release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
           ref: ${{ needs.prepare.outputs.sha }}
-          path: release-source
           persist-credentials: false
       - name: Build dependencies
         run: |
@@ -122,7 +131,7 @@ jobs:
           export PKG_CONFIG_PATH="$RUNNER_TEMP/native/lib/pkgconfig"
           export LD_LIBRARY_PATH="$RUNNER_TEMP/native/lib"
           export CXXFLAGS="-DCMS_NO_REGISTER_KEYWORD"
-          cargo build --release --locked --manifest-path release-source/Cargo.toml --target-dir "$GITHUB_WORKSPACE/target"
+          cargo build --release --locked
           python3 packaging/linux/bundle.py target/release/rawmakase dist/linux-root "$RUNNER_TEMP/native"
           mkdir -p dist/upload
           tar -C dist/linux-root -czf "dist/upload/rawmakase-$VERSION-$ARCH-linux.tar.gz" usr
@@ -156,6 +165,7 @@ jobs:
           libxkbcommon-x11 libx11 libxcb libxcursor libxi libxrandr libglvnd
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - name: Build from the exact tagged source archive
         run: |
@@ -193,6 +203,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - name: Test icon packaging
         run: python3 -m unittest discover -s packaging/macos -p 'test_*.py'
@@ -231,14 +242,11 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       MACOSX_DEPLOYMENT_TARGET: '15.0'
     steps:
+      # The whole build, dependency scripts and pins included, comes from
+      # the release commit, also when a manual run rebuilds an older tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - name: Check out the exact release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
           ref: ${{ needs.prepare.outputs.sha }}
-          path: release-source
           persist-credentials: false
       - name: Download the compiled Liquid Glass icon
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -261,7 +269,7 @@ jobs:
           LIBOMP_PREFIX=$(brew --prefix libomp)
           export LIBOMP_PREFIX
           export CXXFLAGS="-DCMS_NO_REGISTER_KEYWORD"
-          cargo build --release --locked --manifest-path release-source/Cargo.toml --target-dir "$GITHUB_WORKSPACE/target"
+          cargo build --release --locked
           python3 packaging/macos/bundle.py target/release/rawmakase dist/RAWmakase.app "$VERSION" "$RUNNER_TEMP/native" --minimum-macos "$MACOSX_DEPLOYMENT_TARGET" --icon-assets compiled-icon/Assets.car
       - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
         with:
@@ -305,22 +313,18 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - run: git config --global core.autocrlf false
+      # As on Linux and macOS: everything comes from the release commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Check out the exact release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
           ref: ${{ needs.prepare.outputs.sha }}
-          path: release-source
+          fetch-depth: 0
           persist-credentials: false
       # Tags from before Windows support (v0.1.8 and earlier) cannot build
       # for Windows; a rehearsal or rebuild of one skips this job's work.
       - name: Windows support in the release source
         id: source
         shell: bash
-        run: echo "windows=$(test -f release-source/packaging/windows/deps.ps1 && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        run: echo "windows=$(test -f packaging/windows/deps.ps1 && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - if: steps.source.outputs.windows == 'true'
         name: Build dependencies and app
         run: |
@@ -328,7 +332,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal
           rustup default 1.98.1
           packaging/windows/deps.ps1 "$env:RUNNER_TEMP\deps"
-          cargo build --release --locked --manifest-path release-source/Cargo.toml --target-dir "$env:GITHUB_WORKSPACE\target"
+          cargo build --release --locked
           packaging/windows/stage.ps1 target\release\rawmakase.exe "$env:RUNNER_TEMP\deps" dist\windows
       - if: steps.source.outputs.windows == 'true'
         uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
@@ -391,6 +395,7 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version }}
       source-artifact: package-inputs
+      source-ref: ${{ needs.prepare.outputs.sha }}
 
   publish:
     name: Publish verified packages

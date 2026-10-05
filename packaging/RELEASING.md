@@ -87,8 +87,18 @@ rename these assets.
 For a rehearsal without a new publication, manually run **Release**, select
 `main` as the workflow branch, enter an existing stable **tag** (such as
 `v0.1.1`), and uncheck **publish** (enabled by default). The workflow validates and builds
-the tag’s exact source commit using packaging tools from the selected workflow
-branch, so tags created before this workflow can also be tested. Tags from
+the tag’s exact commit: every job checks out the tag and runs its own dependency
+scripts and pins (`packaging/native-deps.sh`, `packaging/windows/deps.ps1` and its
+vcpkg overlay ports, the PKGBUILD, the bundling and verification scripts), so a
+rebuilt release gets the same LibRaw and Little CMS it shipped with, never newer
+ones from `main`. Only the workflow steps themselves, and the reviewed notes (see
+below), come from the selected workflow branch. CI caches for a manual run are
+keyed by the tag's commit, so they never restore or replace `main`'s. A tag whose
+packaging no longer matches the current workflow steps fails in the job that
+calls it; run **Release** from the tag itself (**Use workflow from**: the tag)
+instead. native-packages' shared workflow reads `native-packages.yaml` and
+`packaging/homebrew` from the workflow branch, so the run stops at the start if
+those differ from the tag's; run it from the tag then as well. Tags from
 before Windows support (v0.1.8 and earlier) skip the Windows build.
 This still builds, signs, notarizes and verifies packages, then retains them as
 Actions artifacts. It does not replace any existing release assets. A normal
@@ -113,7 +123,8 @@ It publishes the file verbatim for both new and existing releases. Automated
 checks enforce presence; the maintainer still reviews accuracy and writing.
 
 For a normal tag push, notes come from the tagged commit. A manual rebuild uses
-notes from the selected workflow branch while building the exact tag's source.
+notes from the selected workflow branch while building the exact tag's source
+and dependencies.
 This allows notes to be backfilled for older releases without moving their tags.
 Review those notes against that tag, not against the latest application code.
 
