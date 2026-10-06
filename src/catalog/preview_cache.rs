@@ -39,8 +39,14 @@ impl PreviewCache {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Several preview threads each open the cache: one creates it while the
+        // others wait, rather than finding it half made.
+        static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _opening = OPENING.lock().unwrap_or_else(|e| e.into_inner());
         let db = Connection::open(path)?;
-        db.busy_timeout(Duration::from_millis(250))?;
+        // Only background threads use the cache, so waiting on another one's
+        // write costs no responsiveness, where giving up loses the preview.
+        db.busy_timeout(Duration::from_secs(5))?;
         let app: i64 = db.query_row("PRAGMA application_id", [], |r| r.get(0))?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if app == 0 && version == 0 {

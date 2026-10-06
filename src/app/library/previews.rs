@@ -45,27 +45,6 @@ pub(super) fn spawn(
 ) -> (Sender<PathBuf>, Receiver<PreviewResult>) {
     spawn_with(cache_path, shown, ctx, super::thumbnail)
 }
-/// The disk cache the preview threads share through one connection, so a new
-/// cache is created once and its writes never wait on each other. Opened by the
-/// first thread to need it, off the UI thread.
-struct SharedCache {
-    path: PathBuf,
-    /// The cache, or why it could not be opened; `None` until opened.
-    opened: Mutex<Option<Result<PreviewCache, String>>>,
-}
-impl SharedCache {
-    fn with<T>(&self, f: impl FnOnce(Result<&mut PreviewCache, &str>) -> T) -> T {
-        let mut opened = self.opened.lock().unwrap_or_else(|e| e.into_inner());
-        let cache =
-            opened.get_or_insert_with(|| PreviewCache::open(&self.path).map_err(|e| e.to_string()));
-        f(cache.as_mut().map_err(|e| e.as_str()))
-    }
-    /// Opens the cache again, e.g. after a panic left it mid-write.
-    fn reopen(&self) {
-        *self.opened.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-}
-
 fn spawn_with(
     cache_path: PathBuf,
     shown: Shown,
@@ -76,15 +55,18 @@ fn spawn_with(
     let (result_tx, result_rx) = mpsc::sync_channel(24);
     // Requests are taken in order by whichever thread is free.
     let rx = Arc::new(Mutex::new(rx));
-    let cache = Arc::new(SharedCache {
-        path: cache_path,
-        opened: Mutex::new(None),
-    });
     for index in 0..preview_threads() {
         let (rx, result_tx) = (rx.clone(), result_tx.clone());
-        let (cache, shown, ctx) = (cache.clone(), shown.clone(), ctx.clone());
+        let (cache_path, shown, ctx) = (cache_path.clone(), shown.clone(), ctx.clone());
         let worker = move || {
             crate::raw::background_thread();
+            // Each thread has its own connection, so one thread's cache reads and
+            // writes never hold up another's; SQLite serialises only the writes.
+            let open = || match PreviewCache::open(&cache_path) {
+                Ok(cache) => (Some(cache), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            let (mut cache, mut open_error) = open();
             loop {
                 let Ok(path) = rx.lock().unwrap_or_else(|e| e.into_inner()).recv() else {
                     break;
@@ -102,26 +84,26 @@ fn spawn_with(
                     if result_tx.send(skipped).is_err() {
                         break;
                     }
+                    ctx.request_repaint();
                     continue;
                 }
                 let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let (cached, mut cache_error) = cache.with(|cache| match cache {
-                        Ok(cache) => match cache.load(&path) {
-                            Ok(image) => (image, None),
-                            Err(error) => (None, Some(error.to_string())),
-                        },
-                        Err(error) => (None, Some(error.to_string())),
+                    let mut cache_error = open_error.clone();
+                    let cached = cache.as_ref().and_then(|cache| match cache.load(&path) {
+                        Ok(image) => image,
+                        Err(error) => {
+                            cache_error = Some(error.to_string());
+                            None
+                        }
                     });
                     let image = cached.or_else(|| {
                         let stamp = Stamp::read(&path).ok()?;
                         let image = thumbnail(&path).ok()?;
-                        cache.with(|cache| {
-                            if let Ok(cache) = cache
-                                && let Err(error) = cache.store(&path, &stamp, &image)
-                            {
-                                cache_error = Some(error.to_string());
-                            }
-                        });
+                        if let Some(cache) = &mut cache
+                            && let Err(error) = cache.store(&path, &stamp, &image)
+                        {
+                            cache_error = Some(error.to_string());
+                        }
                         Some(image)
                     });
                     (image, cache_error)
@@ -129,7 +111,7 @@ fn spawn_with(
                 // After a panic the preview is unavailable, and the cache, which it may
                 // have left mid-write, is opened again for the next one.
                 let (image, cache_error) = prepared.unwrap_or_else(|_| {
-                    cache.reopen();
+                    (cache, open_error) = open();
                     (None, None)
                 });
                 let result = PreviewResult {
