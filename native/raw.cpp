@@ -161,6 +161,10 @@ const char* ora_version() { return LibRaw::version(); }
 // Threads it starts afterwards, such as its OpenMP team, inherit the priority.
 void ora_background_thread() {
     background_thread = true;
+#ifdef _OPENMP
+    // For OpenMP regions outside ora_develop too, such as ora_cfa_copy.
+    omp_set_num_threads(2);
+#endif
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #elif defined(__APPLE__)
