@@ -31,7 +31,7 @@ pub(super) type Shown = Arc<Mutex<HashSet<PathBuf>>>;
 
 /// Threads making embedded previews. Most of a preview's time is spent waiting
 /// on the file, which on a network share is mostly latency, so a few run at once;
-/// fewer than the cores, which Develop and edited previews need too.
+/// fewer than the cores, and at low priority, as Develop needs those first.
 fn preview_threads() -> usize {
     std::thread::available_parallelism()
         .map_or(2, |n| n.get().saturating_sub(2))
@@ -84,6 +84,7 @@ fn spawn_with(
         let (rx, result_tx) = (rx.clone(), result_tx.clone());
         let (cache, shown, ctx) = (cache.clone(), shown.clone(), ctx.clone());
         let worker = move || {
+            crate::raw::background_thread();
             loop {
                 let Ok(path) = rx.lock().unwrap_or_else(|e| e.into_inner()).recv() else {
                     break;
@@ -222,7 +223,8 @@ pub(super) enum EditResult {
 }
 /// Edited previews on their own worker, so slow renders never delay the
 /// embedded previews that fill the grid first. The latest request goes
-/// first, and renders run on two threads so browsing stays responsive.
+/// first, and renders run on two low-priority threads so browsing and
+/// editing stay responsive.
 pub(super) fn spawn_edited(
     cache_path: PathBuf,
     wanted: Wanted,
@@ -239,9 +241,11 @@ fn spawn_edited_with(
     let (tx, rx) = mpsc::channel::<EditJob>();
     let (result_tx, result_rx) = mpsc::channel();
     std::thread::spawn(move || {
+        crate::raw::background_thread();
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(2)
             .thread_name(|i| format!("edited-preview-{i}"))
+            .start_handler(|_| crate::raw::background_thread())
             .build()
             .ok();
         let mut cache = PreviewCache::open(&cache_path).ok();

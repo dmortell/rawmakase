@@ -38,6 +38,7 @@ fn prefetcher() -> Latest<Prefetch> {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(2)
                 .thread_name(|i| format!("prefetch-{i}"))
+                .start_handler(|_| raw::background_thread())
                 .build()
                 .ok()
         }) else {
