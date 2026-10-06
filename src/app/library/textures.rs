@@ -201,11 +201,12 @@ impl PreviewTextures {
         if !self.thumb_seen.contains(path) {
             self.thumb_seen.insert(path.to_path_buf());
         }
+        // Wanted now, so a worker that takes it before the next frame makes it,
+        // including a request still queued from before it scrolled away.
+        self.thumb_shown.lock().unwrap().insert(path.to_path_buf());
         if self.pending.contains(path) {
             return;
         }
-        // Wanted now, so a worker that takes it before the next frame makes it.
-        self.thumb_shown.lock().unwrap().insert(path.to_path_buf());
         if self.thumb_tx.send(path.to_path_buf()).is_ok() {
             self.pending.insert(path.to_path_buf());
             self.progress.queued();

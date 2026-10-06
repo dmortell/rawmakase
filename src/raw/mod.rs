@@ -357,15 +357,13 @@ pub fn embedded_preview(path: &Path, edge: u32) -> anyhow::Result<image::RgbImag
     let smaller = handle
         .thumbnail(Some(edge))
         .and_then(|bytes| upright_jpeg(bytes, m.flip));
-    match smaller {
-        Ok(image) if image.width().max(image.height()) >= edge => Ok(image),
-        // A damaged or mislabelled smaller preview: the largest, as before. The
-        // handle now points at the smaller one, so the file is opened afresh.
-        _ => {
-            let (mut handle, m) = ffi::Handle::open(path)?;
-            upright_jpeg(handle.thumbnail(None)?, m.flip)
-        }
-    }
+    // A damaged smaller preview: the largest, as before. The handle now points
+    // at the smaller one, so the file is opened afresh. A largest preview under
+    // `edge` is what the first call already decoded, so it is kept.
+    smaller.or_else(|_| {
+        let (mut handle, m) = ffi::Handle::open(path)?;
+        upright_jpeg(handle.thumbnail(None)?, m.flip)
+    })
 }
 /// A JPEG preview turned upright by its own orientation, else by LibRaw's `flip`.
 fn upright_jpeg(bytes: Vec<u8>, flip: i32) -> anyhow::Result<image::RgbImage> {
