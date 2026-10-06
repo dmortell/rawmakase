@@ -19,7 +19,7 @@ fn develop_workspace_drains_library_preview_results() -> Result<()> {
         library.cache.progress.queued();
         tx.try_send(previews::PreviewResult {
             path,
-            image: Some(image::RgbImage::new(16, 16)),
+            prepared: previews::Prepared::Ready(image::RgbImage::new(16, 16)),
             cache_error: None,
         })?;
     }
@@ -724,7 +724,7 @@ fn restore_source_scopes_to_the_folder_and_its_subfolders() -> Result<()> {
 fn thumbnail_requests_are_not_repeated_while_pending_or_failed() -> Result<()> {
     let (_directory, mut library) = library_of(&["a.RAF"])?;
     let ctx = library.ctx.clone();
-    let (tx, rx) = std::sync::mpsc::sync_channel(8);
+    let (tx, rx) = std::sync::mpsc::channel();
     library.cache.thumb_tx = tx;
     let path = library.photos[0].path.clone();
     library.cache.request_thumbnail(&path, &ctx);
@@ -777,7 +777,7 @@ fn an_edited_preview_from_develop_outranks_renders_in_flight() -> Result<()> {
     let id = library.photos[0].id;
     let (job_tx, jobs) = std::sync::mpsc::channel();
     let (result_tx, results) = std::sync::mpsc::channel();
-    let (thumb_tx, _thumbs) = std::sync::mpsc::sync_channel(8);
+    let (thumb_tx, _thumbs) = std::sync::mpsc::channel();
     library.cache.edit_tx = job_tx;
     library.cache.edit_rx = results;
     library.cache.thumb_tx = thumb_tx;

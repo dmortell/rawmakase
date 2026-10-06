@@ -54,6 +54,25 @@ public:
         for (size_t i=0;i<n;++i)
             for(int c=0;c<4;++c) scale_clipped += imgdata.image[i][c] == 65535;
     }
+    // Unpacks listed preview `index`, or else LibRaw's default one: `unpack_thumb_ex`
+    // overwrites the default's location, so it is put back before falling back.
+    int unpack_preview(int index) {
+        if (index >= 0) {
+            auto offset = libraw_internal_data.internal_data.toffset;
+            auto format = libraw_internal_data.unpacker_data.thumb_format;
+            auto misc = libraw_internal_data.unpacker_data.thumb_misc;
+            auto t = imgdata.thumbnail;
+            if (!unpack_thumb_ex(index) && imgdata.thumbnail.tformat == LIBRAW_THUMBNAIL_JPEG)
+                return 0;
+            libraw_internal_data.internal_data.toffset = offset;
+            libraw_internal_data.unpacker_data.thumb_format = format;
+            libraw_internal_data.unpacker_data.thumb_misc = misc;
+            imgdata.thumbnail.tlength = t.tlength;
+            imgdata.thumbnail.twidth = t.twidth;
+            imgdata.thumbnail.theight = t.theight;
+        }
+        return unpack_thumb();
+    }
 };
 // The black level an optical-black border says, when LibRaw's is far below it (LibRaw
 // reads the EOS R6 Mark III's maker notes at the wrong offsets and gets 0 plus small
@@ -251,10 +270,27 @@ void ora_copy(void* ptr, float* out) {
     for(size_t i=0;i<n;++i) for(int c=0;c<3;++c)
         out[i*3+c]=r.imgdata.image[i][c]*r.decode_gain;
 }
-int ora_thumbnail(void* ptr, unsigned char** data, unsigned* size, char* err) {
+// The smallest listed JPEG preview whose long edge is at least `edge` and whose shape
+// matches the image's, or -1 for LibRaw's default (its largest). A 24 MP preview takes
+// several times longer to decode than the ~1600 px one most cameras also embed.
+static int smallest_preview(const libraw_data_t& d, unsigned edge) {
+    auto aspect=[](double w, double h) { return std::max(w,h)/std::max(1.,std::min(w,h)); };
+    const double image=aspect(d.sizes.width,d.sizes.height);
+    int best=-1; unsigned best_pixels=0;
+    for(int i=0;i<std::min(d.thumbs_list.thumbcount,LIBRAW_THUMBNAIL_MAXCOUNT);++i) {
+        const auto& t=d.thumbs_list.thumblist[i];
+        unsigned pixels=unsigned(t.twidth)*t.theight;
+        if(t.tformat!=LIBRAW_INTERNAL_THUMBNAIL_JPEG || std::max(t.twidth,t.theight)<edge) continue;
+        // Previews letterboxed to another shape keep the default.
+        if(std::abs(aspect(t.twidth,t.theight)-image)>0.03*image) continue;
+        if(best<0 || pixels<best_pixels) { best=i; best_pixels=pixels; }
+    }
+    return best;
+}
+int ora_thumbnail(void* ptr, unsigned edge, unsigned char** data, unsigned* size, char* err) {
     try {
         auto& r=static_cast<Handle*>(ptr)->raw;
-        int rc=r.unpack_thumb();
+        int rc=r.unpack_preview(edge ? smallest_preview(r.imgdata,edge) : -1);
         if(rc) { message(err,libraw_strerror(rc)); return rc; }
         if(r.imgdata.thumbnail.tformat!=LIBRAW_THUMBNAIL_JPEG) {
             message(err,"Embedded preview is not JPEG"); return -1;

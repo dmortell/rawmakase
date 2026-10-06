@@ -36,7 +36,13 @@ fn raw_development_and_export() -> anyhow::Result<()> {
         assert!(fast.width < fast.metadata.width && fast.height < fast.metadata.height);
         drop(fast);
         let mut raw = Raw::open(path)?;
-        assert!(!raw.thumbnail()?.is_empty());
+        let largest = image::load_from_memory(&raw.thumbnail()?)?;
+        let small = rawmakase::raw::embedded_preview(path, 640)?;
+        let long = |w: u32, h: u32| w.max(h);
+        assert!(
+            long(small.width(), small.height()) >= 640.min(long(largest.width(), largest.height()))
+        );
+        assert!(small.width() * small.height() <= largest.width() * largest.height());
         let image = raw.develop(false, &AtomicBool::new(false))?;
         assert_eq!(image.scale_clipped, 0);
         assert!(image.pixels.iter().flatten().all(|p| p.is_finite()));

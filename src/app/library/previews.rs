@@ -7,76 +7,146 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, Receiver, Sender},
     },
 };
 
+/// What became of a requested embedded preview.
+pub(super) enum Prepared {
+    Ready(image::RgbImage),
+    /// The original is offline or damaged, or has no usable embedded preview.
+    Unavailable,
+    /// The photo was no longer shown when its turn came; asked for again when it is.
+    Skipped,
+}
 pub(super) struct PreviewResult {
     pub path: PathBuf,
-    pub image: Option<image::RgbImage>,
+    pub prepared: Prepared,
     pub cache_error: Option<String>,
+}
+/// Files shown in the grid or filmstrip in the last frame, plus those asked for
+/// since. Embedded previews are made only for these, so scrolling past photos
+/// leaves no backlog.
+pub(super) type Shown = Arc<Mutex<HashSet<PathBuf>>>;
+
+/// Threads making embedded previews. Most of a preview's time is spent waiting
+/// on the file, which on a network share is mostly latency, so a few run at once;
+/// fewer than the cores, which Develop and edited previews need too.
+fn preview_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(2, |n| n.get().saturating_sub(2))
+        .clamp(2, 4)
 }
 
 pub(super) fn spawn(
     cache_path: PathBuf,
+    shown: Shown,
     ctx: egui::Context,
-) -> (SyncSender<PathBuf>, Receiver<PreviewResult>) {
-    spawn_with(cache_path, ctx, super::thumbnail)
+) -> (Sender<PathBuf>, Receiver<PreviewResult>) {
+    spawn_with(cache_path, shown, ctx, super::thumbnail)
 }
+/// The disk cache the preview threads share through one connection, so a new
+/// cache is created once and its writes never wait on each other. Opened by the
+/// first thread to need it, off the UI thread.
+struct SharedCache {
+    path: PathBuf,
+    /// The cache, or why it could not be opened; `None` until opened.
+    opened: Mutex<Option<Result<PreviewCache, String>>>,
+}
+impl SharedCache {
+    fn with<T>(&self, f: impl FnOnce(Result<&mut PreviewCache, &str>) -> T) -> T {
+        let mut opened = self.opened.lock().unwrap_or_else(|e| e.into_inner());
+        let cache =
+            opened.get_or_insert_with(|| PreviewCache::open(&self.path).map_err(|e| e.to_string()));
+        f(cache.as_mut().map_err(|e| e.as_str()))
+    }
+    /// Opens the cache again, e.g. after a panic left it mid-write.
+    fn reopen(&self) {
+        *self.opened.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
 fn spawn_with(
     cache_path: PathBuf,
+    shown: Shown,
     ctx: egui::Context,
     thumbnail: fn(&Path) -> anyhow::Result<image::RgbImage>,
-) -> (SyncSender<PathBuf>, Receiver<PreviewResult>) {
-    let (tx, rx) = mpsc::sync_channel::<PathBuf>(24);
+) -> (Sender<PathBuf>, Receiver<PreviewResult>) {
+    let (tx, rx) = mpsc::channel::<PathBuf>();
     let (result_tx, result_rx) = mpsc::sync_channel(24);
-    std::thread::spawn(move || {
-        let open = || match PreviewCache::open(&cache_path) {
-            Ok(cache) => (Some(cache), None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-        let (mut cache, mut open_error) = open();
-        while let Ok(path) = rx.recv() {
-            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut cache_error = open_error.clone();
-                let cached = cache.as_ref().and_then(|cache| match cache.load(&path) {
-                    Ok(image) => image,
-                    Err(error) => {
-                        cache_error = Some(error.to_string());
-                        None
-                    }
-                });
-                let image = cached.or_else(|| {
-                    let stamp = Stamp::read(&path).ok()?;
-                    let image = thumbnail(&path).ok()?;
-                    if let Some(cache) = &mut cache
-                        && let Err(error) = cache.store(&path, &stamp, &image)
-                    {
-                        cache_error = Some(error.to_string());
-                    }
-                    Some(image)
-                });
-                (image, cache_error)
-            }));
-            // After a panic the preview is unavailable, and the cache, which it may
-            // have left mid-write, is opened again for the next one.
-            let (image, cache_error) = prepared.unwrap_or_else(|_| {
-                (cache, open_error) = open();
-                (None, None)
-            });
-            if result_tx
-                .send(PreviewResult {
-                    path,
-                    image,
-                    cache_error,
-                })
-                .is_err()
-            {
-                break;
-            }
-            ctx.request_repaint();
-        }
+    // Requests are taken in order by whichever thread is free.
+    let rx = Arc::new(Mutex::new(rx));
+    let cache = Arc::new(SharedCache {
+        path: cache_path,
+        opened: Mutex::new(None),
     });
+    for index in 0..preview_threads() {
+        let (rx, result_tx) = (rx.clone(), result_tx.clone());
+        let (cache, shown, ctx) = (cache.clone(), shown.clone(), ctx.clone());
+        let worker = move || {
+            loop {
+                let Ok(path) = rx.lock().unwrap_or_else(|e| e.into_inner()).recv() else {
+                    break;
+                };
+                if !shown
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&path)
+                {
+                    let skipped = PreviewResult {
+                        path,
+                        prepared: Prepared::Skipped,
+                        cache_error: None,
+                    };
+                    if result_tx.send(skipped).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let (cached, mut cache_error) = cache.with(|cache| match cache {
+                        Ok(cache) => match cache.load(&path) {
+                            Ok(image) => (image, None),
+                            Err(error) => (None, Some(error.to_string())),
+                        },
+                        Err(error) => (None, Some(error.to_string())),
+                    });
+                    let image = cached.or_else(|| {
+                        let stamp = Stamp::read(&path).ok()?;
+                        let image = thumbnail(&path).ok()?;
+                        cache.with(|cache| {
+                            if let Ok(cache) = cache
+                                && let Err(error) = cache.store(&path, &stamp, &image)
+                            {
+                                cache_error = Some(error.to_string());
+                            }
+                        });
+                        Some(image)
+                    });
+                    (image, cache_error)
+                }));
+                // After a panic the preview is unavailable, and the cache, which it may
+                // have left mid-write, is opened again for the next one.
+                let (image, cache_error) = prepared.unwrap_or_else(|_| {
+                    cache.reopen();
+                    (None, None)
+                });
+                let result = PreviewResult {
+                    path,
+                    prepared: image.map_or(Prepared::Unavailable, Prepared::Ready),
+                    cache_error,
+                };
+                if result_tx.send(result).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        };
+        std::thread::Builder::new()
+            .name(format!("preview-{index}"))
+            .spawn(worker)
+            .expect("preview thread");
+    }
     (tx, result_rx)
 }
 
@@ -283,8 +353,15 @@ impl Progress {
     }
 
     pub fn finish(&mut self, result: &PreviewResult) {
-        self.completed += 1;
-        self.failed += usize::from(result.image.is_none());
+        match result.prepared {
+            Prepared::Ready(_) => self.completed += 1,
+            Prepared::Unavailable => {
+                self.completed += 1;
+                self.failed += 1;
+            }
+            // Counted again when it is asked for again.
+            Prepared::Skipped => self.total = self.total.saturating_sub(1),
+        }
         if let Some(error) = &result.cache_error {
             self.cache_error = Some(error.clone());
         }
@@ -341,24 +418,67 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn shown(paths: &[&PathBuf]) -> Shown {
+        Arc::new(Mutex::new(paths.iter().map(|p| (*p).clone()).collect()))
+    }
+
+    #[test]
+    fn previews_no_longer_shown_are_skipped_and_not_counted() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("photo.png");
+        image::RgbImage::new(16, 16).save(&source)?;
+        let shown = shown(&[]);
+        let (tx, rx) = spawn(
+            directory.path().join("previews.sqlite3"),
+            shown.clone(),
+            egui::Context::default(),
+        );
+        let mut progress = Progress::default();
+        tx.send(source.clone())?;
+        progress.queued();
+        let result = rx.recv_timeout(Duration::from_secs(10))?;
+        assert!(matches!(result.prepared, Prepared::Skipped));
+        progress.finish(&result);
+        assert!(!progress.active());
+        // Shown again, it is made.
+        shown.lock().unwrap().insert(source.clone());
+        tx.send(source)?;
+        progress.queued();
+        let result = rx.recv_timeout(Duration::from_secs(10))?;
+        assert!(matches!(result.prepared, Prepared::Ready(_)));
+        progress.finish(&result);
+        assert_eq!(
+            (progress.completed, progress.total, progress.failed),
+            (1, 1, 0)
+        );
+        Ok(())
+    }
+
     #[test]
     fn worker_persists_previews_and_reuses_them_when_original_is_offline() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let source = directory.path().join("photo.png");
         image::RgbImage::new(720, 480).save(&source)?;
         let cache_path = directory.path().join("previews.sqlite3");
-        let (tx, rx) = spawn(cache_path.clone(), egui::Context::default());
-        tx.try_send(source.clone())?;
+        let (tx, rx) = spawn(
+            cache_path.clone(),
+            shown(&[&source]),
+            egui::Context::default(),
+        );
+        tx.send(source.clone())?;
         let result = rx.recv_timeout(Duration::from_secs(10))?;
-        assert_eq!(result.image.unwrap().dimensions(), (640, 427));
+        let Prepared::Ready(image) = result.prepared else {
+            panic!("no preview")
+        };
+        assert_eq!(image.dimensions(), (640, 427));
         assert!(result.cache_error.is_none());
         // Reopen through another worker: a memory-only result cannot pass this.
         std::fs::remove_file(&source)?;
-        let (tx, rx) = spawn(cache_path, egui::Context::default());
-        tx.try_send(source.clone())?;
+        let (tx, rx) = spawn(cache_path, shown(&[&source]), egui::Context::default());
+        tx.send(source.clone())?;
         let result = rx.recv_timeout(Duration::from_secs(10))?;
         assert_eq!(result.path, source);
-        assert!(result.image.is_some());
+        assert!(matches!(result.prepared, Prepared::Ready(_)));
         assert!(result.cache_error.is_none());
         Ok(())
     }
@@ -376,17 +496,23 @@ mod tests {
         }
         let (tx, rx) = spawn_with(
             directory.path().join("previews.sqlite3"),
+            shown(&[&panics, &works]),
             egui::Context::default(),
             thumbnail,
         );
-        tx.try_send(panics.clone())?;
-        tx.try_send(works.clone())?;
-        let first = rx.recv_timeout(Duration::from_secs(10))?;
+        tx.send(panics.clone())?;
+        tx.send(works.clone())?;
+        // Threads finish in any order.
+        let mut results = [
+            rx.recv_timeout(Duration::from_secs(10))?,
+            rx.recv_timeout(Duration::from_secs(10))?,
+        ];
+        results.sort_by_key(|r| r.path != panics);
+        let [first, second] = results;
         assert_eq!(first.path, panics);
-        assert!(first.image.is_none());
-        let second = rx.recv_timeout(Duration::from_secs(10))?;
+        assert!(matches!(first.prepared, Prepared::Unavailable));
         assert_eq!(second.path, works);
-        assert!(second.image.is_some());
+        assert!(matches!(second.prepared, Prepared::Ready(_)));
         Ok(())
     }
 
@@ -457,19 +583,29 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let source = directory.path().join("photo.png");
         image::RgbImage::new(16, 16).save(&source)?;
+        let missing = directory.path().join("missing.ARW");
         // A directory cannot be opened as a SQLite database.
-        let (tx, rx) = spawn(directory.path().into(), egui::Context::default());
+        let (tx, rx) = spawn(
+            directory.path().into(),
+            shown(&[&source, &missing]),
+            egui::Context::default(),
+        );
         let mut progress = Progress::default();
-        for path in [source, directory.path().join("missing.ARW")] {
-            tx.try_send(path)?;
+        for path in [&source, &missing] {
+            tx.send(path.clone())?;
             progress.queued();
         }
-        let result = rx.recv_timeout(Duration::from_secs(10))?;
-        assert!(result.image.is_some());
+        let mut results = [
+            rx.recv_timeout(Duration::from_secs(10))?,
+            rx.recv_timeout(Duration::from_secs(10))?,
+        ];
+        results.sort_by_key(|r| r.path != source);
+        let [result, missed] = results;
+        assert!(matches!(result.prepared, Prepared::Ready(_)));
         assert!(result.cache_error.is_some());
         progress.finish(&result);
         assert_eq!((progress.completed, progress.total), (1, 2));
-        progress.finish(&rx.recv_timeout(Duration::from_secs(10))?);
+        progress.finish(&missed);
         assert_eq!(
             (progress.completed, progress.total, progress.failed),
             (2, 2, 1)

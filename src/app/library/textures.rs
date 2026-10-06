@@ -2,13 +2,15 @@
 //! embedded preview, and each photo's edited preview once rendered. Both are
 //! bounded; requests go to the workers in `previews`, and results are
 //! matched to the latest request so a late or stale render never shows.
-use super::previews::{self, EditJob, EditResult, EditSource, PreviewResult, Progress, Wanted};
+use super::previews::{
+    self, EditJob, EditResult, EditSource, Prepared, PreviewResult, Progress, Shown, Wanted,
+};
 use crate::catalog::Photo;
 use eframe::egui;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, Sender, SyncSender},
+    sync::mpsc::{Receiver, Sender},
 };
 
 /// Textures kept per cache; older ones are dropped first.
@@ -20,8 +22,12 @@ pub(super) struct PreviewTextures {
     pub(super) thumb_order: VecDeque<PathBuf>,
     pub(super) pending: HashSet<PathBuf>,
     pub(super) failed: HashSet<PathBuf>,
-    pub(super) thumb_tx: SyncSender<PathBuf>,
+    pub(super) thumb_tx: Sender<PathBuf>,
     pub(super) thumb_rx: Receiver<PreviewResult>,
+    /// Files asking for an embedded preview this frame, and last frame's as the
+    /// workers see them.
+    thumb_seen: HashSet<PathBuf>,
+    thumb_shown: Shown,
     /// Edited previews: rendered from each photo's edit on a second worker.
     pub(super) edit_tx: Sender<EditJob>,
     pub(super) edit_rx: Receiver<EditResult>,
@@ -47,7 +53,8 @@ impl PreviewTextures {
     /// Starts both preview workers on the shared disk cache.
     pub(super) fn new(ctx: &egui::Context) -> Self {
         let cache = crate::catalog::preview_cache::PreviewCache::path();
-        let (thumb_tx, thumb_rx) = previews::spawn(cache.clone(), ctx.clone());
+        let thumb_shown = Shown::default();
+        let (thumb_tx, thumb_rx) = previews::spawn(cache.clone(), thumb_shown.clone(), ctx.clone());
         let edit_wanted = Wanted::default();
         let (edit_tx, edit_rx) = previews::spawn_edited(cache, edit_wanted.clone(), ctx.clone());
         Self {
@@ -57,6 +64,8 @@ impl PreviewTextures {
             failed: HashSet::new(),
             thumb_tx,
             thumb_rx,
+            thumb_seen: HashSet::new(),
+            thumb_shown,
             edit_tx,
             edit_rx,
             edited_requested: HashMap::new(),
@@ -75,15 +84,14 @@ impl PreviewTextures {
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.thumb_rx.try_recv() {
             self.progress.finish(&result);
-            let PreviewResult {
-                path, image: im, ..
-            } = result;
+            let PreviewResult { path, prepared, .. } = result;
             self.pending.remove(&path);
-            match im {
-                Some(im) => self.insert_thumb(ctx, path, &im),
-                None => {
+            match prepared {
+                Prepared::Ready(im) => self.insert_thumb(ctx, path, &im),
+                Prepared::Unavailable => {
                     self.failed.insert(path);
                 }
+                Prepared::Skipped => {}
             }
         }
         while let Ok(result) = self.edit_rx.try_recv() {
@@ -111,6 +119,8 @@ impl PreviewTextures {
     pub(super) fn publish_shown(&mut self) {
         let shown = std::mem::take(&mut self.edit_seen);
         *self.edit_wanted.lock().unwrap() = shown;
+        let shown = std::mem::take(&mut self.thumb_seen);
+        *self.thumb_shown.lock().unwrap() = shown;
     }
     pub(super) fn insert_thumb(
         &mut self,
@@ -185,11 +195,18 @@ impl PreviewTextures {
         self.request_edited(photo, edit);
     }
     pub(super) fn request_thumbnail(&mut self, path: &Path, ctx: &egui::Context) {
-        if !self.thumbs.contains_key(path)
-            && !self.pending.contains(path)
-            && !self.failed.contains(path)
-            && self.thumb_tx.try_send(path.to_path_buf()).is_ok()
-        {
+        if self.thumbs.contains_key(path) || self.failed.contains(path) {
+            return;
+        }
+        if !self.thumb_seen.contains(path) {
+            self.thumb_seen.insert(path.to_path_buf());
+        }
+        if self.pending.contains(path) {
+            return;
+        }
+        // Wanted now, so a worker that takes it before the next frame makes it.
+        self.thumb_shown.lock().unwrap().insert(path.to_path_buf());
+        if self.thumb_tx.send(path.to_path_buf()).is_ok() {
             self.pending.insert(path.to_path_buf());
             self.progress.queued();
             ctx.request_repaint();

@@ -39,14 +39,16 @@ pub(super) fn available_paths(photos: &[Photo]) -> HashSet<PathBuf> {
         .collect()
 }
 
+/// Long edge of the grid's embedded previews, in pixels.
+const EDGE: u32 = 640;
+
 pub(super) fn thumbnail(path: &std::path::Path) -> Result<image::RgbImage> {
     let image = if crate::storage::is_raw(path) {
-        let mut raw = crate::raw::Raw::open(path)?;
-        crate::raw::thumbnail(&mut raw)?
+        crate::raw::embedded_preview(path, EDGE)?
     } else {
         raster(path)?
     };
-    Ok(downscale(&image, 640))
+    Ok(downscale(&image, EDGE))
 }
 /// A JPEG, TIFF or PNG decoded and turned upright; refused above 150 MP.
 pub(super) fn raster(path: &std::path::Path) -> Result<image::RgbImage> {

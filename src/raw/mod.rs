@@ -213,9 +213,9 @@ impl Raw {
         metadata.lens_profiles = crate::lens::lcp::library().for_photo(&metadata);
         Ok(Self { handle, metadata })
     }
-    /// The embedded JPEG preview, as stored.
+    /// The largest embedded JPEG preview, as stored.
     pub fn thumbnail(&mut self) -> Result<Vec<u8>> {
-        self.handle.thumbnail()
+        self.handle.thumbnail(None)
     }
     pub fn develop(self, fast: bool, cancel: &AtomicBool) -> Result<CameraImage> {
         // Half-size drafts always use LibRaw's fast half-size path.
@@ -326,13 +326,26 @@ fn fuji_crop(path: &Path) -> Option<[u32; 4]> {
     let ([left, top], [width, height]) = (origin?, size?);
     (width > 0 && height > 0).then_some([left, top, width, height])
 }
+/// The largest embedded preview, decoded and upright.
 pub(crate) fn thumbnail(raw: &mut Raw) -> anyhow::Result<image::RgbImage> {
+    upright_jpeg(raw.thumbnail()?, raw.metadata.flip)
+}
+/// The smallest embedded preview at least `edge` pixels on its long side (the
+/// largest when the file lists none), decoded and upright. A 24 MP preview takes
+/// several times longer to decode than the ~1600 px one most cameras also embed,
+/// and the file is read for nothing else: none of `Raw::open`'s lens, DNG or
+/// profile lookups, each another trip to a network share.
+pub fn embedded_preview(path: &Path, edge: u32) -> anyhow::Result<image::RgbImage> {
+    let (mut handle, m) = ffi::Handle::open(path)?;
+    upright_jpeg(handle.thumbnail(Some(edge))?, m.flip)
+}
+/// A JPEG preview turned upright by its own orientation, else by LibRaw's `flip`.
+fn upright_jpeg(bytes: Vec<u8>, flip: i32) -> anyhow::Result<image::RgbImage> {
     use image::{ImageDecoder, metadata::Orientation};
-    let bytes = raw.thumbnail()?;
     let mut decoder = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes))?;
     let mut orientation = decoder.orientation()?;
     if orientation == Orientation::NoTransforms {
-        orientation = match raw.metadata.flip {
+        orientation = match flip {
             3 => Orientation::Rotate180,
             5 => Orientation::Rotate270,
             6 => Orientation::Rotate90,
@@ -341,7 +354,7 @@ pub(crate) fn thumbnail(raw: &mut Raw) -> anyhow::Result<image::RgbImage> {
     }
     let mut im = image::DynamicImage::from_decoder(decoder)?;
     im.apply_orientation(orientation);
-    Ok(im.to_rgb8())
+    Ok(im.into_rgb8())
 }
 
 #[cfg(test)]

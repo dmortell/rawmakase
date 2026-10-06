@@ -82,8 +82,13 @@ unsafe extern "C" {
         err: *mut c_char,
     ) -> c_int;
     fn ora_cfa_copy(h: *mut c_void, out: *mut f32);
-    fn ora_thumbnail(h: *mut c_void, data: *mut *mut u8, size: *mut u32, err: *mut c_char)
-    -> c_int;
+    fn ora_thumbnail(
+        h: *mut c_void,
+        edge: u32,
+        data: *mut *mut u8,
+        size: *mut u32,
+        err: *mut c_char,
+    ) -> c_int;
     fn ora_srgb_profile(data: *mut u8, size: u32) -> u32;
     fn ora_display(path: *const c_char, data: *mut u8, count: u32) -> c_int;
 }
@@ -170,13 +175,22 @@ impl Handle {
         ensure!(!handle.is_null(), "{}", text(&err));
         Ok((Self(handle), m))
     }
-    /// The embedded JPEG preview.
-    pub(super) fn thumbnail(&mut self) -> Result<Vec<u8>> {
+    /// An embedded JPEG preview: the smallest whose long edge is at least `edge`
+    /// pixels when given and the file lists one, else the largest.
+    pub(super) fn thumbnail(&mut self, edge: Option<u32>) -> Result<Vec<u8>> {
         let mut data = std::ptr::null_mut();
         let mut size = 0;
         let mut err = [0 as c_char; ERR];
         // SAFETY: the handle is open; `data`, `size` and `err` are live out-pointers.
-        let rc = unsafe { ora_thumbnail(self.0, &mut data, &mut size, err.as_mut_ptr()) };
+        let rc = unsafe {
+            ora_thumbnail(
+                self.0,
+                edge.unwrap_or(0),
+                &mut data,
+                &mut size,
+                err.as_mut_ptr(),
+            )
+        };
         ensure!(rc == 0, "{}", text(&err));
         ensure!(
             !data.is_null() && size > 0 && size < 100_000_000,
