@@ -49,6 +49,7 @@ fn old_recipes_keep_original_profile_tones() {
         "mixer_model",
         "saturation_model",
         "vibrance_model",
+        "black_white_model",
         "calibration_model",
         "whites_model",
         "gamut_model",
@@ -93,6 +94,10 @@ fn old_recipes_keep_original_profile_tones() {
         crate::develop::color_mixer::VibranceModel::Original
     );
     assert_eq!(
+        old.black_white_model,
+        crate::develop::black_white::BlackWhiteModel::Original
+    );
+    assert_eq!(
         old.calibration_model,
         crate::develop::calibration::CalibrationModel::Original
     );
@@ -106,6 +111,7 @@ fn old_recipes_keep_original_profile_tones() {
         mixer_model: crate::develop::color_mixer::MixerModel::Chart,
         saturation_model: crate::develop::color_mixer::SaturationModel::Gray,
         vibrance_model: crate::develop::color_mixer::VibranceModel::Chart,
+        black_white_model: crate::develop::black_white::BlackWhiteModel::Chart,
         calibration_model: crate::develop::calibration::CalibrationModel::Measured,
         ..Recipe::default()
     };
@@ -118,6 +124,7 @@ fn old_recipes_keep_original_profile_tones() {
     assert_eq!(back.mixer_model, measured.mixer_model);
     assert_eq!(back.saturation_model, measured.saturation_model);
     assert_eq!(back.vibrance_model, measured.vibrance_model);
+    assert_eq!(back.black_white_model, measured.black_white_model);
     assert_eq!(back.calibration_model, measured.calibration_model);
 }
 
@@ -852,7 +859,7 @@ fn point_colors_dropper_samples_the_photo_as_rendered() -> anyhow::Result<()> {
     let brighter = pick(&masked)?;
     assert!(brighter[2] > 1.3 * before[2], "{before:?} {brighter:?}");
     // A swatch picked there selects that color: Saturation −100 grays the spot.
-    let mut edited = plain.clone();
+    let mut edited = plain;
     let i = add_sample(&mut edited.point_colors, before).unwrap();
     edited.point_colors[i] = PointColor {
         shift: [0., -1., 0.],
@@ -1019,7 +1026,7 @@ fn targeted_adjustments_sample_the_photo_where_each_control_sees_it() -> anyhow:
     }
     assert!(TargetWeights::new(target, &sample(&r, 2)?, &r).is_empty());
     // Black & white: the mix's own hue weights at the patch, and a drag up brightens it.
-    let mut mono = r.clone();
+    let mut mono = r;
     mono.effects.monochrome = true;
     let s = sample(&mono, 1)?;
     let w = TargetWeights::new(Target::BlackWhite, &s, &mono);
@@ -1560,7 +1567,7 @@ fn new_edits_reduce_colour_noise_as_camera_raw() -> anyhow::Result<()> {
     let ratio = on / off;
     assert!((0.35..0.7).contains(&ratio), "{ratio}");
     // The original operator at 25 barely touched it.
-    let mut original = r.clone();
+    let mut original = r;
     original.noise_model = NoiseModel::Original;
     assert!(chroma_noise(&original)? / off > 0.75);
     let saved: Recipe = serde_json::from_value(serde_json::to_value(Recipe::default())?)?;

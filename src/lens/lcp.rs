@@ -12,7 +12,7 @@
 use super::{LensCorrection, Radial};
 use crate::{
     raw::Metadata,
-    xmp::ns::{RDF, ST_CAMERA},
+    xml::ns::{RDF, ST_CAMERA},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -750,7 +750,7 @@ mod tests {
         )
         .unwrap();
         let destination = temp.path().join("library");
-        let paths = vec![empty.clone(), good.clone()];
+        let paths = vec![empty.clone(), good];
         // All or nothing, as before.
         assert!(import_into(&paths, &destination).is_err());
         let done = import_each_into(&paths, &destination);
