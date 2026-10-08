@@ -410,6 +410,7 @@ the validation docs.
 | [Validation](validation.md) | Recorded checks, evidence limits, reproduction and measured performance. |
 | [macOS / Lightroom validation](macos-lightroom-validation.md) | Dated photographic comparisons and platform validation results. |
 | [Parity gaps](parity-gaps.md) | Known differences and work still needed for Lightroom parity. |
+| [Scene tone stage](scene-tone-stage.md) | Proposed engine 5: Whites, Shadows and Dehaze before the profile tone curve, as Camera Raw applies them (#354). Not implemented. |
 | [Tone controls](tone-controls.md), [color mixer](color-mixer.md), [lens corrections](lens-corrections.md), [transform](transform.md), [demosaic](demosaic.md) | How each engine 4 stage was measured against Camera Raw and what it does. |
 | [Retouching](retouching.md), [masking](masking.md) | The Remove, Red Eye and Masking tools: use, rendering, Camera Raw measurements and what is not implemented. |
 | [Lightroom profiles](lightroom-profiles.md) | RAWmakase's own profiles, importing Adobe and third-party profiles, and supported profile features. |
