@@ -524,6 +524,7 @@ model = "X100F"
 baseline_exposure = 0.15
 fujifilm_exposure_shift = "ignored"
 source = "adobe-dng"
+neutral_calibration = [0.9883, 1.031]
 checked = "2026-09-26"
 sample = "2 Lightroom DNGs (ISO 200 and 400), see docs/macos-lightroom-validation.md"
 
@@ -1320,6 +1321,7 @@ model = "ILCE-7CR"
 aliases = ["A7CR"]
 baseline_exposure = 0.3
 source = "fitted"
+neutral_calibration = [0.9432, 0.9994]
 checked = "2026-09-26"
 sample = "4 private photos; 0.25 leaves them 0.03-0.07 EV dark, 0.35 0.04-0.08 EV bright"
 
@@ -1329,6 +1331,7 @@ model = "ILCE-7M2"
 aliases = ["A7 II"]
 baseline_exposure = 0.3
 source = "fitted"
+neutral_calibration = [1.01, 0.9707]
 checked = "2026-09-26"
 sample = "8 private photos; 0.25 leaves them 0.03-0.07 EV dark, 0.35 0.04-0.08 EV bright"
 
@@ -1347,6 +1350,7 @@ model = "ILCE-7M4"
 aliases = ["A7 IV"]
 baseline_exposure = 0.35
 source = "adobe-dng"
+neutral_calibration = [0.9817, 0.9687]
 checked = "2026-10-05"
 sample = "raw.pixls.us, 1 photo at ISO 640"
 

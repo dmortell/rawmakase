@@ -1,11 +1,6 @@
 //! Camera reference metadata, not fitted image corrections.
-//! X100F values were read from Lightroom-generated DNGs of DSCF7845 (ISO 400)
-//! and DSCF7853 (ISO 200), both DR100. See docs/macos-lightroom-validation.md.
 //! Per-camera baseline exposures live in data/cameras.toml (crate::cameras).
 use crate::camera_data::{HighlightTonePriority, Metadata};
-fn x100f(m: &Metadata) -> bool {
-    m.make.eq_ignore_ascii_case("Fujifilm") && m.model.eq_ignore_ascii_case("X100F")
-}
 /// Camera Raw's default exposure for this photo: a DNG's own BaselineExposure,
 /// otherwise the camera table's value (data/cameras.toml).
 pub fn baseline_exposure(m: &Metadata) -> f32 {
@@ -37,12 +32,10 @@ fn fujifilm_shift(m: &Metadata, row: &crate::cameras::Baseline) -> f32 {
     let usual = if m.xtrans { -0.72 } else { 0. };
     row.dr100_shift.unwrap_or(usual) - shift
 }
+/// The CameraCalibration Adobe writes for the body (data/cameras.toml), which scales the
+/// camera neutral Camera Raw derives from a Temperature and Tint.
 pub fn neutral_calibration(m: &Metadata) -> [f32; 3] {
-    if x100f(m) {
-        [0.9883, 1., 1.031]
-    } else {
-        [1.; 3]
-    }
+    crate::cameras::neutral_calibration(&m.make, &m.model)
 }
 #[cfg(test)]
 mod tests {
@@ -98,6 +91,14 @@ mod tests {
             0.15
         );
         assert_eq!(neutral_calibration(&fujifilm("X100V", true, None)), [1.; 3]);
+        assert_eq!(
+            neutral_calibration(&fujifilm("X100F", true, None)),
+            [0.9883, 1., 1.031]
+        );
+        assert_eq!(
+            neutral_calibration(&camera("Sony", "ILCE-7M4")),
+            [0.9817, 1., 0.9687]
+        );
     }
     #[test]
     fn baseline_covers_measured_cameras() {

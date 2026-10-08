@@ -50,6 +50,11 @@ pub struct Camera {
     #[serde(default)]
     pub fujifilm_dr100_shift: Option<f32>,
     pub source: Source,
+    /// The red and blue entries of the CameraCalibration tag Adobe writes for this
+    /// body (green is 1): Camera Raw scales the camera neutral of a Temperature and
+    /// Tint by it. Bodies without a row take 1.
+    #[serde(default)]
+    pub neutral_calibration: Option<[f32; 2]>,
     /// When the values were checked (YYYY-MM-DD) and on what.
     pub checked: String,
     pub sample: String,
@@ -88,6 +93,14 @@ pub fn all() -> &'static [Camera] {
 fn find_in<'a>(rows: &'a [Camera], make: &str, model: &str) -> Option<&'a Camera> {
     rows.iter()
         .find(|c| c.make.eq_ignore_ascii_case(make) && c.is(model))
+}
+
+/// The CameraCalibration of a camera, `[red, 1, blue]`; `[1; 3]` when it has no row
+/// or its row lists none.
+pub fn neutral_calibration(make: &str, model: &str) -> [f32; 3] {
+    find_in(all(), make, model)
+        .and_then(|c| c.neutral_calibration)
+        .map_or([1.; 3], |[r, b]| [r, 1., b])
 }
 
 /// Where a baseline exposure comes from.
@@ -171,6 +184,9 @@ mod tests {
             let name = format!("{} {}", c.make, c.model);
             assert!(!c.make.is_empty() && !c.model.is_empty(), "{name}");
             assert!(c.baseline_exposure.abs() <= 3., "{name}");
+            if let Some(cal) = c.neutral_calibration {
+                assert!(cal.iter().all(|v| (0.8..=1.25).contains(v)), "{name}");
+            }
             let d: Vec<&str> = c.checked.split('-').collect();
             assert!(
                 d.len() == 3 && d.iter().all(|p| p.parse::<u32>().is_ok()) && d[0].len() == 4,
@@ -207,6 +223,7 @@ mod tests {
             fujifilm_exposure_shift: ExposureShift::Followed,
             fujifilm_dr100_shift: None,
             source: Source::Fitted,
+            neutral_calibration: None,
             checked: "2026-10-05".into(),
             sample: "test".into(),
             how: String::new(),

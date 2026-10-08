@@ -58,6 +58,17 @@ The camera-matching DCPs (Camera Standard and so on) of some Sony bodies carry a
 BaselineExposureOffset of −0.35 EV, which RAWmakase applies with those profiles; Adobe
 Standard DCPs carry none.
 
+## Neutral calibration
+
+Camera Raw scales the camera neutral it derives from a Temperature and Tint by the
+CameraCalibration tag Adobe writes for the body (red and blue; green is 1). Without it,
+a custom white balance on a Sony A7 IV renders about 5 mired and 5 Tint away from
+Camera Raw, and the Temperature and Tint shown for As Shot are off the same way.
+`neutral_calibration = [red, blue]` holds it. Read it from a DNG Adobe DNG Converter
+wrote for the body (`exiftool -CameraCalibration1 file.dng`); As Shot renders do not use
+it. A body without it takes 1. The A7 IV, A7 II, A7 CR and X100F rows carry one;
+Adobe writes one for every body, so other rows can follow the same way.
+
 ## Adding a camera
 
 Add one row by hand; nothing else is needed:
