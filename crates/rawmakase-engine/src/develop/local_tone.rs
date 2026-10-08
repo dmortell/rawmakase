@@ -25,6 +25,8 @@ pub(crate) struct LocalToneMap {
     /// Image keys of Shadows and Highlights, for masks that evaluate them at their own
     /// slider values.
     pub(crate) keys: [f32; 2],
+    pub(crate) shadow_scale: f32,
+    pub(crate) original_shadow_key: f32,
     /// The measured positive Clarity's log2 gain on this grid (`clarity.rs`).
     pub(crate) clarity: Option<Vec<f32>>,
 }
@@ -79,6 +81,7 @@ pub(crate) struct Sliders {
     pub(crate) shadows: f32,
     pub(crate) highlights: f32,
     pub(crate) clarity: f32,
+    pub(crate) adaptive: bool,
 }
 impl Sliders {
     pub(crate) fn of(r: &crate::model::recipe::Recipe) -> Self {
@@ -86,6 +89,7 @@ impl Sliders {
             shadows: r.shadows,
             highlights: r.highlights,
             clarity: super::clarity::measured(r),
+            adaptive: r.shadows_model == crate::model::operators::SceneToneModel::Adaptive,
         }
     }
 }
@@ -153,27 +157,65 @@ impl LocalToneMap {
         let b: Vec<f32> = m.iter().zip(&a).map(|(m, a)| m - a * m).collect();
         let (a, b) = rayon::join(|| mean(&a), || mean(&b));
         // Masks may evaluate either slider, so both keys are kept.
-        let keys = [
+        let mut keys = [
             percentile(SHADOWS.percentile),
             percentile(HIGHLIGHTS.percentile),
         ];
+        let original_shadow_key = keys[0];
+        let mut shadow_scale = 1.;
+        if sliders.adaptive {
+            // A clipped bright region is real scene headroom, not an outlier to
+            // discard. This also distinguishes dark backlit scenes from low-key
+            // scenes with a few moderate highlights.
+            let clipped = ((keys[0].exp2() - 0.8) / 0.2).clamp(0., 1.);
+            let robust = keys[0].min(percentile(0.95) + 0.25);
+            let high_key = ((percentile(0.90).exp2() - 0.9) / 0.1).clamp(0., 1.);
+            keys[0] = robust + (keys[0] - robust) * clipped + 1.6 * high_key;
+            shadow_scale = 1. + 0.3 * high_key;
+        }
         let clarity = (sliders.clarity > 0.).then(|| {
             let base: Vec<f32> = logs
                 .iter()
                 .zip(a.iter().zip(&b))
                 .map(|(l, (a, b))| a * l + b)
                 .collect();
-            super::clarity::field(&logs, &base, w, h, keys[0], sliders.clarity)
+            super::clarity::field(
+                &logs,
+                &base,
+                w,
+                h,
+                percentile(SHADOWS.percentile),
+                sliders.clarity,
+            )
         });
+        let mut shadows = Curve::new(
+            &SHADOWS,
+            sliders.shadows,
+            if sliders.shadows > 0. {
+                keys[0]
+            } else {
+                original_shadow_key
+            },
+        );
+        if sliders.shadows > 0.
+            && let Some(curve) = &mut shadows
+        {
+            curve
+                .table
+                .iter_mut()
+                .for_each(|gain| *gain *= shadow_scale);
+        }
         Self {
             width: w,
             height: h,
             a,
             b,
             scale: [w as f32 / source[0] as f32, h as f32 / source[1] as f32],
-            shadows: Curve::new(&SHADOWS, sliders.shadows, keys[0]),
+            shadows,
             highlights: Curve::new(&HIGHLIGHTS, sliders.highlights, keys[1]),
             keys,
+            shadow_scale,
+            original_shadow_key,
             clarity,
         }
     }
@@ -187,8 +229,20 @@ impl LocalToneMap {
     /// As [`Self::gain`], with Shadows and Highlights at the given slider values.
     pub(crate) fn gain_with(&self, x: f32, y: f32, rgb: [f32; 3], sliders: [f32; 2]) -> f32 {
         let base = self.base(x, y, rgb);
-        (family(&SHADOWS, sliders[0], self.keys[0], base)
-            + family(&HIGHLIGHTS, sliders[1], self.keys[1], base)
+        (family(
+            &SHADOWS,
+            sliders[0],
+            if sliders[0] > 0. {
+                self.keys[0]
+            } else {
+                self.original_shadow_key
+            },
+            base,
+        ) * if sliders[0] > 0. {
+            self.shadow_scale
+        } else {
+            1.
+        } + family(&HIGHLIGHTS, sliders[1], self.keys[1], base)
             + self.clarity(x, y))
         .exp2()
     }
@@ -292,6 +346,71 @@ pub(super) fn blur(x: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_few_bright_pixels_do_not_set_the_shadow_key() {
+        let mut lum = vec![0.01; 10000];
+        lum[..200].fill(0.5);
+        let map = LocalToneMap::from_luminance(
+            lum,
+            [100, 100],
+            [100, 100],
+            Sliders {
+                adaptive: true,
+                ..Sliders::default()
+            },
+        );
+        assert!(map.keys[0] <= 0.01_f32.log2() + 0.35, "{}", map.keys[0]);
+    }
+    #[test]
+    fn scene_adaptation_preserves_negative_shadows() {
+        let mut lum = vec![0.01; 10000];
+        lum[..200].fill(0.5);
+        let build = |adaptive| {
+            LocalToneMap::from_luminance(
+                lum.clone(),
+                [100, 100],
+                [100, 100],
+                Sliders {
+                    adaptive,
+                    shadows: -1.,
+                    ..Sliders::default()
+                },
+            )
+        };
+        let original = build(false);
+        let adaptive = build(true);
+        for (x, y, v) in [(0., 0., 0.5), (50., 50., 0.01)] {
+            assert_eq!(original.gain(x, y, [v; 3]), adaptive.gain(x, y, [v; 3]));
+            assert_eq!(
+                original.gain_with(x, y, [v; 3], [-1., 0.]),
+                adaptive.gain_with(x, y, [v; 3], [-1., 0.])
+            );
+        }
+    }
+    #[test]
+    fn adaptive_global_and_mask_shadows_use_the_same_scene() {
+        for bright in [0.3, 1.] {
+            let mut lum = vec![0.03; 10000];
+            lum[..2000].fill(bright);
+            for shadows in [-1., 0.5, 1.] {
+                let map = LocalToneMap::from_luminance(
+                    lum.clone(),
+                    [100, 100],
+                    [100, 100],
+                    Sliders {
+                        adaptive: true,
+                        shadows,
+                        ..Sliders::default()
+                    },
+                );
+                for (x, y, value) in [(5., 5., bright), (50., 50., 0.03)] {
+                    let global = map.gain(x, y, [value; 3]);
+                    let masked = map.gain_with(x, y, [value; 3], [shadows, 0.]);
+                    assert!((global - masked).abs() < 1e-5, "{global} / {masked}");
+                }
+            }
+        }
+    }
     #[test]
     fn blur_preserves_constants_and_means() {
         let x = vec![2.; 30];

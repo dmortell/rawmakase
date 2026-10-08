@@ -45,12 +45,11 @@ impl CurveSet {
     ) -> Self {
         let mut lut = Self::with_photo_measures(im, r, matrix);
         if lut.basic_curves {
-            let local = crate::develop::local_tone::LocalToneMap::build(
-                im,
-                crate::develop::local_tone::Sliders::of(r),
-                local_tone,
-                |p| tone_stage(p, &im.metadata, r, &lut, matrix, None).0,
-            );
+            let sliders = crate::develop::local_tone::Sliders::of(r);
+            let local =
+                crate::develop::local_tone::LocalToneMap::build(im, sliders, local_tone, |p| {
+                    tone_stage(p, &im.metadata, r, &lut, matrix, None).0
+                });
             lut.local = local;
         }
         lut
@@ -60,16 +59,28 @@ impl CurveSet {
     pub(super) fn with_photo_measures(im: Source, r: &Recipe, matrix: [[f32; 3]; 3]) -> Self {
         let mut lut = Self::new(r);
         let (pivot, whites) = (measures_contrast_pivot(r), measures_whites(r));
+        let dehaze = measures_dehaze(r);
         if pivot {
             lut.photo.contrast =
                 crate::develop::basic_tone::ContrastCurve::Pivot(contrast_pivot(im, r, matrix));
         }
         if whites {
-            lut.photo.whites = crate::develop::basic_tone::WhitesTable::for_highlights(
-                photo_highlights(im, r, matrix),
-            );
+            let level = photo_highlights(im, r, matrix);
+            lut.photo.whites = if r.whites_model == crate::model::operators::WhitesModel::Extended {
+                crate::develop::basic_tone::WhitesTable::extended(level)
+            } else {
+                crate::develop::basic_tone::WhitesTable::for_highlights(level)
+            };
         }
-        if pivot || whites {
+        if dehaze {
+            let luminance = photo_luminance(im, r, matrix);
+            let p90 = percentile(luminance.clone(), 0.90);
+            let p99 = percentile(luminance, 0.99);
+            let clipped = ((p99 - 0.9) / 0.1).clamp(0., 1.);
+            lut.photo.dehaze =
+                crate::develop::basic_tone::dehaze_for_brightness(p90 + (p99 - p90) * clipped);
+        }
+        if pivot || whites || dehaze {
             lut.basic = crate::develop::basic_tone::BasicTone::new(
                 r.contrast,
                 r.whites,
@@ -95,6 +106,7 @@ impl CurveSet {
             },
             // Without the photo, adaptive Whites takes the original median curve.
             whites: crate::develop::basic_tone::WhitesTable::original(),
+            ..crate::develop::basic_tone::PhotoTone::original()
         };
         Self {
             output: PixelOutput::Display,
@@ -176,11 +188,21 @@ pub(crate) fn measures_contrast_pivot(r: &Recipe) -> bool {
                 .iter()
                 .any(|m| m.is_active() && m.adjust.contrast != 0.))
 }
+/// Whether positive Dehaze needs scene brightness, globally or in a mask.
+pub(crate) fn measures_dehaze(r: &Recipe) -> bool {
+    r.engine >= 4
+        && r.reference_curves
+        && r.dehaze_model == crate::model::operators::SceneToneModel::Adaptive
+        && (r.effects.dehaze > 0.
+            || r.masks
+                .iter()
+                .any(|m| m.is_active() && m.adjust.dehaze > 0.))
+}
 /// Whether the recipe's positive Whites follows the photo's highlights.
 pub(crate) fn measures_whites(r: &Recipe) -> bool {
     r.engine >= 4
         && r.reference_curves
-        && r.whites_model == crate::model::operators::WhitesModel::Adaptive
+        && r.whites_model != crate::model::operators::WhitesModel::Original
         && (r.whites > 0.
             || r.masks
                 .iter()
@@ -201,17 +223,27 @@ fn measured_copy(im: Source<'_>) -> std::borrow::Cow<'_, CameraImage> {
 /// luminance of the photo's reduced copy as the recipe renders it before the Basic
 /// tone sliders, its Exposure included (measured on the chart).
 fn photo_highlights(im: Source, r: &Recipe, matrix: [[f32; 3]; 3]) -> f32 {
+    crate::develop::basic_tone::highlights(photo_luminance(im, r, matrix))
+}
+fn percentile(mut values: Vec<f32>, q: f32) -> f32 {
+    if values.is_empty() {
+        return 1.;
+    }
+    let k = ((values.len() - 1) as f32 * q) as usize;
+    values.select_nth_unstable_by(k, f32::total_cmp);
+    values[k]
+}
+fn photo_luminance(im: Source, r: &Recipe, matrix: [[f32; 3]; 3]) -> Vec<f32> {
     let small = measured_copy(im);
     let lut = CurveSet::new(r);
-    let luminance: Vec<f32> = small
+    small
         .pixels
         .par_iter()
         .map(|p| {
             let rgb = tone_stage(*p, &im.metadata, r, &lut, matrix, None).0;
             srgb_encode(crate::develop::local_tone::luminance(rgb).clamp(0., 1.))
         })
-        .collect();
-    crate::develop::basic_tone::highlights(luminance)
+        .collect()
 }
 /// Camera Raw's Contrast pivot for this photo, from its reduced copy rendered as the
 /// recipe's profile, white balance and calibration render it, at the camera's

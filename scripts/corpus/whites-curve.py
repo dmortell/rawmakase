@@ -164,13 +164,17 @@ def offset(refs, binary, highlights):
 
 
 def main():
+    global EXPOSURES
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('step', choices=['render', 'table', 'offset'])
     p.add_argument('--refs', type=Path, default=Path(tempfile.gettempdir()) / 'whites-refs.json',
                    help='patch means of the chart renders (kept outside the repository)')
     p.add_argument('--rawmakase', type=Path, help='a built rawmakase binary')
     p.add_argument('--highlights', type=float, nargs='*', help='WHITES_HIGHLIGHTS, for offset')
+    p.add_argument('--min-exposure', type=float, choices=[-5., -2.], default=-2.,
+                   help='-5 measures the extended low-key operator; -2 reproduces the legacy tables')
     args = p.parse_args()
+    EXPOSURES = [args.min_exposure + .25 * i for i in range(round((1 - args.min_exposure) * 4) + 1)]
     if args.step == 'render':
         render(args.refs)
     elif args.step == 'table':

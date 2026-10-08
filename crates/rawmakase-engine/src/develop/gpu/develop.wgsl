@@ -448,7 +448,9 @@ fn local_gain(pos: vec2<f32>, rgb: vec3<f32>) -> f32 {
     if masked && (delta[L_SHADOWS] != 0.0 || delta[L_HIGHLIGHTS] != 0.0) {
         let s = p(P_GLOBAL_SH) + delta[L_SHADOWS];
         let h = p(P_GLOBAL_SH + 1u) + delta[L_HIGHLIGHTS];
-        return exp2(family(0u, s, p(P_LOCAL_KEYS), base)
+        let shadow_key = select(p(P_LOCAL_ORIGINAL_SHADOW_KEY), p(P_LOCAL_KEYS), s > 0.0);
+        let shadow_scale = select(1.0, p(P_LOCAL_SHADOW_SCALE), s > 0.0);
+        return exp2(family(0u, s, shadow_key, base) * shadow_scale
             + family(1u, h, p(P_LOCAL_KEYS + 1u), base) + clarity);
     }
     return exp2(local_curve(P_SHADOWS, base) + local_curve(P_HIGHLIGHTS, base) + clarity);

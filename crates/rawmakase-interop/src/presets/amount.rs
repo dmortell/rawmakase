@@ -166,7 +166,6 @@ fn process_version(r: &mut Recipe, full: &Recipe) {
     r.vibrance_model = full.vibrance_model;
     r.black_white_model = full.black_white_model;
     r.calibration_model = full.calibration_model;
-    r.whites_model = full.whites_model;
     r.gamut_model = full.gamut_model;
 }
 
@@ -394,6 +393,9 @@ fn blend(a: &Recipe, b: &Recipe, t: f32, m: &Metadata) -> Recipe {
         black_white_model: _,
         calibration_model: _,
         whites_model: _,
+        white_balance_model: _,
+        shadows_model: _,
+        dehaze_model: _,
         gamut_model: _,
         temperature,
         tint,
@@ -533,12 +535,32 @@ fn blend(a: &Recipe, b: &Recipe, t: f32, m: &Metadata) -> Recipe {
         unknown: unknown.clone(),
         ..Recipe::default()
     };
+    // A control's discrete version follows the source of its value. At a
+    // genuinely blended value it uses the preset's version, like other choices.
+    r.whites_model = if r.whites == a.whites && r.whites != b.whites {
+        a.whites_model
+    } else {
+        b.whites_model
+    };
+    r.shadows_model = if r.shadows == a.shadows && r.shadows != b.shadows {
+        a.shadows_model
+    } else {
+        b.shadows_model
+    };
+    r.dehaze_model = if r.effects.dehaze == a.effects.dehaze && r.effects.dehaze != b.effects.dehaze
+    {
+        a.dehaze_model
+    } else {
+        b.dehaze_model
+    };
+    r.white_balance_model = b.white_balance_model;
     process_version(&mut r, b);
     // The gains follow the controls, unless they are one side's own.
     if (r.temperature, r.tint) == (b.temperature, b.tint) && r.profile == b.profile {
         r.wb = *wb;
         r.auto_white_balance = *auto_white_balance;
     } else if (r.temperature, r.tint) == (a.temperature, a.tint) && r.profile == a.profile {
+        r.white_balance_model = a.white_balance_model;
         r.wb = a.wb;
         r.auto_white_balance = a.auto_white_balance;
     } else {

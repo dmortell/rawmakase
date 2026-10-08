@@ -326,6 +326,16 @@ fn gpu_develop_matches_cpu_pixel_stage() -> Result<()> {
     r.effects.monochrome = true;
     r.effects.gray_mix = [0.2, -0.3, 0.1, 0.4, -0.2, 0.3, 0., -0.1];
     recipes.push(r);
+    let mut adaptive = recipes[point_colors - 1].clone();
+    adaptive.shadows_model = crate::model::operators::SceneToneModel::Adaptive;
+    adaptive.dehaze_model = crate::model::operators::SceneToneModel::Adaptive;
+    adaptive.whites_model = crate::model::operators::WhitesModel::Extended;
+    adaptive.shadows = 1.;
+    adaptive.whites = 1.;
+    adaptive.effects.dehaze = 0.4;
+    recipes.push(adaptive.clone());
+    adaptive.exposure = 3.;
+    recipes.push(adaptive);
     let mut gpu = Processor::new()?;
     let cancel = AtomicBool::new(false);
     // A local-tone gain changes the Shadows/Highlights map's input.
@@ -826,7 +836,7 @@ fn gpu_masks_match_cpu_pixel_stage() -> Result<()> {
             ..Default::default()
         },
     ];
-    let weights = MaskWeights {
+    let mut weights = MaskWeights {
         deltas: adjust.iter().map(|a| a.delta(0.9)).collect(),
         data: Arc::new(
             (0..n)
@@ -855,9 +865,20 @@ fn gpu_masks_match_cpu_pixel_stage() -> Result<()> {
             crate::model::operators::ContrastModel::Adaptive,
             crate::model::operators::WhitesModel::Adaptive,
         ),
+        (
+            crate::model::operators::ContrastModel::Adaptive,
+            crate::model::operators::WhitesModel::Extended,
+        ),
     ] {
         r.contrast_model = model;
         r.whites_model = whites;
+        if whites == crate::model::operators::WhitesModel::Extended {
+            r.shadows_model = crate::model::operators::SceneToneModel::Adaptive;
+            r.dehaze_model = crate::model::operators::SceneToneModel::Adaptive;
+            r.exposure = 3.;
+            r.masks[0].adjust.whites = 1.;
+            weights.deltas = r.masks.iter().map(|m| m.adjust.delta(0.9)).collect();
+        }
         let mut params = pixel_params(source, &r).expect("GPU port covers this recipe");
         assert!(params.set_masks(source, &r, Some(&weights)));
         let expected = develop_samples(source, &r, &samples, &cancel, Some(&weights))?;

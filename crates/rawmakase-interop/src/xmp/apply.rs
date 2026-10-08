@@ -402,6 +402,32 @@ impl Preset {
     }
 
     fn apply_basic(&self, settings: &mut Settings<'_>, r: &mut Recipe) -> Result<()> {
+        settings.seen.insert("RAWmakaseWhiteBalanceModel".into());
+        if let Some(value) = settings.values.get("RAWmakaseWhiteBalanceModel") {
+            r.white_balance_model =
+                serde_json::from_value(serde_json::Value::String(value.clone()))
+                    .context("Unsupported RAWmakase white-balance operator")?;
+        }
+        settings.seen.insert("RAWmakaseLegacyWhites".into());
+        settings.seen.insert("RAWmakaseWhitesModel".into());
+        if let Some(value) = settings.values.get("RAWmakaseWhitesModel") {
+            r.whites_model = serde_json::from_value(serde_json::Value::String(value.clone()))
+                .context("Unsupported RAWmakase Whites operator")?;
+        } else if settings.values.contains_key("RAWmakaseLegacyWhites")
+            && r.whites_model != crate::model::operators::WhitesModel::Original
+        {
+            r.whites_model = crate::model::operators::WhitesModel::Adaptive;
+        }
+        for (key, model) in [
+            ("RAWmakaseShadowsModel", &mut r.shadows_model),
+            ("RAWmakaseDehazeModel", &mut r.dehaze_model),
+        ] {
+            settings.seen.insert(key.into());
+            if let Some(value) = settings.values.get(key) {
+                *model = serde_json::from_value(serde_json::Value::String(value.clone()))
+                    .with_context(|| format!("Unsupported {key} operator"))?;
+            }
+        }
         settings.assign("Exposure2012", &mut r.exposure, 1., -8., 8.)?;
         settings.assign("Contrast2012", &mut r.contrast, 0.01, -1., 1.)?;
         settings.assign("Highlights2012", &mut r.highlights, 0.01, -1., 1.)?;

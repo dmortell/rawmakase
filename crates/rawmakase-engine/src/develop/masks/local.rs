@@ -201,6 +201,7 @@ mod tests {
         let adaptive = PhotoTone {
             contrast: ContrastCurve::Pivot(0.45),
             whites: WhitesTable::for_highlights(0.8),
+            ..PhotoTone::original()
         };
         for photo in [original, adaptive] {
             let global = BasicTone::new(0.5, 0.4, -0.3, 0., &photo).unwrap();

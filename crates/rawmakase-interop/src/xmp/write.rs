@@ -161,6 +161,33 @@ pub(super) fn settings(r: &Recipe, photo: Option<Frame<'_>>) -> Settings {
     let m = photo.map(|p| p.metadata);
     let mut s = Settings(Vec::new());
     s.text("ProcessVersion", "11.0");
+    s.text(
+        "RAWmakaseWhiteBalanceModel",
+        match r.white_balance_model {
+            crate::model::operators::WhiteBalanceModel::Original => "Original",
+            crate::model::operators::WhiteBalanceModel::Calibrated => "Calibrated",
+        },
+    );
+    s.text(
+        "RAWmakaseWhitesModel",
+        match r.whites_model {
+            crate::model::operators::WhitesModel::Original => "Original",
+            crate::model::operators::WhitesModel::Adaptive => "Adaptive",
+            crate::model::operators::WhitesModel::Extended => "Extended",
+        },
+    );
+    for (name, model) in [
+        ("RAWmakaseShadowsModel", r.shadows_model),
+        ("RAWmakaseDehazeModel", r.dehaze_model),
+    ] {
+        s.text(
+            name,
+            match model {
+                crate::model::operators::SceneToneModel::Original => "Original",
+                crate::model::operators::SceneToneModel::Adaptive => "Adaptive",
+            },
+        );
+    }
     if let Some(profile) = &r.profile {
         let name = match &profile.enhanced {
             Some(look) => &look.base_name,

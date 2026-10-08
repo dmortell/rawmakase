@@ -19,13 +19,52 @@ impl WhitesTable {
     /// `highlights`: Camera Raw's curve at the exposure that gives the chart such
     /// highlights, plus [`WHITES_OFFSET`]. Negative Whites is the same on every photo.
     pub(crate) fn for_highlights(highlights: f32) -> Self {
-        let ev = interpolate(&WHITES_HIGHLIGHTS, &WHITES_EXPOSURES, highlights) + WHITES_OFFSET;
-        let (j, w) = bracket(&WHITES_EXPOSURES, ev);
+        Self::from_measurements(
+            highlights,
+            &WHITES_HIGHLIGHTS,
+            &WHITES_EXPOSURES,
+            &WHITES_ADAPTIVE,
+            WHITES_OFFSET,
+        )
+    }
+    /// Extended low-key measurements, without changing saved Adaptive recipes.
+    pub(crate) fn extended(highlights: f32) -> Self {
+        use super::whites_extended_data as data;
+        let mut table = Self::from_measurements(
+            highlights,
+            &data::WHITES_HIGHLIGHTS,
+            &data::WHITES_EXPOSURES,
+            &data::WHITES_ADAPTIVE,
+            WHITES_OFFSET,
+        );
+        // Measurements end at the chart's brightest patch. Preserve tone order
+        // above it for masks too, which evaluate these tables directly.
+        for row in &mut table.0[3..] {
+            let mut maximum = 0_f32;
+            for value in row {
+                maximum = maximum.max(*value);
+                *value = maximum;
+            }
+        }
+        table
+    }
+
+    fn from_measurements(
+        highlights: f32,
+        levels: &[f32],
+        exposures: &[f32],
+        curves: &[[[f32; 64]; 3]],
+        offset100: f32,
+    ) -> Self {
+        let ev = interpolate(levels, exposures, highlights);
         let mut table = WHITES;
         for (row, k) in [(3, 0), (4, 1), (5, 2)] {
-            table[row] = std::array::from_fn(|i| {
-                WHITES_ADAPTIVE[j][k][i] * (1. - w) + WHITES_ADAPTIVE[j + 1][k][i] * w
-            });
+            let (j, w) = bracket(
+                exposures,
+                ev + if row == 5 { offset100 } else { WHITES_OFFSET },
+            );
+            table[row] =
+                std::array::from_fn(|i| curves[j][k][i] * (1. - w) + curves[j + 1][k][i] * w);
         }
         Self(table)
     }
@@ -62,16 +101,39 @@ fn bracket(xs: &[f32], x: f32) -> (usize, f32) {
 pub(crate) struct PhotoTone {
     pub(crate) contrast: ContrastCurve,
     pub(crate) whites: WhitesTable,
+    pub(crate) dehaze: [[f32; 64]; 6],
 }
 impl PhotoTone {
     /// The original Contrast and Whites, as recipes saved before the adaptive ones.
-    #[cfg(test)]
     pub(crate) fn original() -> Self {
         Self {
             contrast: ContrastCurve::Original,
             whites: WhitesTable::original(),
+            dehaze: DEHAZE,
         }
     }
+}
+
+/// Dehaze's tone curve in coordinates of the scene's airlight estimate. The P90
+/// measure avoids a few lamps setting the scale of an otherwise low-key photo.
+pub(crate) fn dehaze_for_brightness(p90: f32) -> [[f32; 64]; 6] {
+    let airlight = (1.15 * p90).clamp(0.15, 1.);
+    std::array::from_fn(|row| {
+        if row < 3 {
+            DEHAZE[row]
+        } else {
+            std::array::from_fn(|i| {
+                let x = (i as f32 + 0.5) / 64.;
+                let value = slider(
+                    &DEHAZE_VALUES,
+                    &DEHAZE,
+                    DEHAZE_VALUES[row],
+                    (x / airlight).min(1.),
+                );
+                (airlight * value + (x - airlight).max(0.)).clamp(0., 1.)
+            })
+        }
+    })
 }
 
 /// The Contrast curve one render uses.
@@ -166,7 +228,7 @@ impl BasicTone {
         let lut = (0..=SIZE)
             .map(|i| {
                 let x = i as f32 / SIZE as f32;
-                let x = slider(&DEHAZE_VALUES, &DEHAZE, dehaze, x);
+                let x = slider(&DEHAZE_VALUES, &photo.dehaze, dehaze, x);
                 match photo.contrast {
                     ContrastCurve::Original => {
                         let x = slider(&SLIDER_VALUES, &CONTRAST, contrast, x);
@@ -218,7 +280,7 @@ pub(crate) fn compose(
     photo: &PhotoTone,
     x: f32,
 ) -> f32 {
-    let x = slider(&DEHAZE_VALUES, &DEHAZE, dehaze, x);
+    let x = slider(&DEHAZE_VALUES, &photo.dehaze, dehaze, x);
     match photo.contrast {
         ContrastCurve::Original => {
             let x = slider(&SLIDER_VALUES, &CONTRAST, contrast, x);
@@ -236,8 +298,8 @@ pub(crate) fn compose(
 /// Contrast, Whites, Blacks, each 6 × 64 values, then the slider positions (Dehaze's,
 /// then the others'), the chart's Contrast (6 × 64) and its pivot. Whites is the
 /// render's own table.
-pub(crate) fn gpu_tables(whites: &WhitesTable) -> Vec<f32> {
-    let mut out: Vec<f32> = [&DEHAZE, &CONTRAST, &whites.0, &BLACKS]
+pub(crate) fn gpu_tables(photo: &PhotoTone) -> Vec<f32> {
+    let mut out: Vec<f32> = [&photo.dehaze, &CONTRAST, &photo.whites.0, &BLACKS]
         .into_iter()
         .flat_map(|t| t.iter().flatten().copied())
         .collect();
@@ -298,6 +360,42 @@ fn curve(t: &[f32; 64], x: f32) -> f32 {
 mod tests {
     use super::*;
     #[test]
+    fn extended_whites_masks_preserve_tone_order() {
+        for highlights in super::super::whites_extended_data::WHITES_HIGHLIGHTS {
+            let photo = PhotoTone {
+                whites: WhitesTable::extended(highlights),
+                ..PhotoTone::original()
+            };
+            for whites in [0.25, 0.5, 0.75, 1.] {
+                let values: Vec<_> = (0..=1024)
+                    .map(|i| compose(0., whites, 0., 0., &photo, i as f32 / 1024.))
+                    .collect();
+                assert!(
+                    values.windows(2).all(|v| v[1] + 1e-6 >= v[0]),
+                    "{highlights} / {whites}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn low_key_dehaze_keeps_camera_raw_midtone() {
+        // Synthetic D65 chart, -4 EV, Dehaze +40. Its encoded P90 is .245.
+        let photo = PhotoTone {
+            dehaze: dehaze_for_brightness(0.245),
+            ..PhotoTone::original()
+        };
+        let actual = compose(0., 0., 0., 0.4, &photo, 0.07596);
+        assert!((actual - 0.06534).abs() < 0.008, "{actual}");
+    }
+    #[test]
+    fn low_key_whites_does_not_stop_at_the_old_measurement_boundary() {
+        // Camera Raw 18.7, synthetic D65 chart at -5 EV, Whites +100.
+        // Gray 0 EV: input .0413, output .4832; photo highlights .1656.
+        let table = WhitesTable::extended(0.1656);
+        let actual = slider(&SLIDER_VALUES, &table.0, 1., 0.0413);
+        assert!((actual - 0.4832).abs() < 0.12, "{actual}");
+    }
+    #[test]
     fn neutral_sliders_are_identity_and_curves_are_monotone() {
         assert!(BasicTone::new(0., 0., 0., 0., &PhotoTone::original()).is_none());
         for s in [-1., -0.6, -0.1, 0.1, 0.4, 1.] {
@@ -315,6 +413,7 @@ mod tests {
                     &PhotoTone {
                         contrast: ContrastCurve::Pivot(TYPICAL_PIVOT),
                         whites: WhitesTable::original(),
+                        ..PhotoTone::original()
                     },
                 )
                 .unwrap();
@@ -334,6 +433,7 @@ mod tests {
             &PhotoTone {
                 contrast: ContrastCurve::Pivot(TYPICAL_PIVOT),
                 whites: WhitesTable::original(),
+                ..PhotoTone::original()
             },
         )
         .unwrap();
@@ -347,6 +447,7 @@ mod tests {
             &PhotoTone {
                 contrast: ContrastCurve::Pivot(TYPICAL_PIVOT),
                 whites: WhitesTable::original(),
+                ..PhotoTone::original()
             },
         )
         .unwrap();
@@ -390,6 +491,7 @@ mod tests {
                 &PhotoTone {
                     contrast: ContrastCurve::Pivot(CONTRAST_PIVOT),
                     whites: WhitesTable::original(),
+                    ..PhotoTone::original()
                 },
             )
             .unwrap();
@@ -414,6 +516,7 @@ mod tests {
                 &PhotoTone {
                     contrast: ContrastCurve::Pivot(pivot),
                     whites: WhitesTable::original(),
+                    ..PhotoTone::original()
                 },
             )
             .unwrap();
@@ -439,6 +542,7 @@ mod tests {
         let dim = PhotoTone {
             contrast: ContrastCurve::Original,
             whites: WhitesTable::for_highlights(0.6936),
+            ..PhotoTone::original()
         };
         for (whites, levels) in [
             (0.5, [[0.1015, 0.1061], [0.2397, 0.264], [0.4823, 0.5781]]),

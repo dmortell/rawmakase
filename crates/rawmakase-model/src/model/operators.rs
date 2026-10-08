@@ -243,6 +243,19 @@ impl BlackWhiteModel {
     }
 }
 
+/// Scene adaptation for Shadows and Dehaze. Saved recipes retain the old model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SceneToneModel {
+    #[default]
+    Original,
+    Adaptive,
+}
+impl SceneToneModel {
+    pub(crate) fn is_original(&self) -> bool {
+        *self == Self::Original
+    }
+}
+
 /// How a recipe's positive Whites renders.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WhitesModel {
@@ -253,6 +266,8 @@ pub enum WhitesModel {
     /// Camera Raw's curve for a photo whose highlights are as bright as this one's
     /// (docs/tone-controls.md#whites).
     Adaptive,
+    /// Adaptive Whites including measurements of low-key scenes down to -5 EV.
+    Extended,
 }
 impl WhitesModel {
     pub(crate) fn is_original(&self) -> bool {
@@ -421,7 +436,21 @@ mod tests {
         use WhitesModel as W;
         stored_as(
             W::Original,
-            &[(W::Original, "Original"), (W::Adaptive, "Adaptive")],
+            &[
+                (W::Original, "Original"),
+                (W::Adaptive, "Adaptive"),
+                (W::Extended, "Extended"),
+            ],
+        );
+        use WhiteBalanceModel as Wb;
+        stored_as(
+            Wb::Original,
+            &[(Wb::Original, "Original"), (Wb::Calibrated, "Calibrated")],
+        );
+        use SceneToneModel as St;
+        stored_as(
+            St::Original,
+            &[(St::Original, "Original"), (St::Adaptive, "Adaptive")],
         );
         use ContrastModel as Co;
         stored_as(
@@ -458,5 +487,20 @@ mod tests {
             ],
             [0.35, 0.8, 0.25, 0.35]
         );
+    }
+}
+
+/// Calibration used when translating Temperature/Tint to camera-neutral gains.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WhiteBalanceModel {
+    /// The pre-calibration conversion, including the original X100F correction.
+    #[default]
+    Original,
+    /// Exact camera or DNG calibration with profile signature matching.
+    Calibrated,
+}
+impl WhiteBalanceModel {
+    pub(crate) fn is_original(&self) -> bool {
+        *self == Self::Original
     }
 }

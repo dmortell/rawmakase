@@ -297,3 +297,13 @@ profile registry. Further work can route remaining UI shortcuts through these
 operations and share parameter descriptors with all editing panels.
 The protocol crate can also hold the request types, so MCP schemas reuse
 them instead of declaring their own. These follow-ups do not require a new editing engine or MIDI-specific commands.
+
+## Camera parity evidence
+
+White-balance calibration facts stay in the model: DNG metadata or exact camera
+table rows combined with Sony per-file daylight facts read by the native adapter,
+applied by camera profiles after signature matching. Scene-dependent
+tone measurements stay in the engine and produce common CPU/GPU tables. XMP
+transports explicit operator versions; it does not implement calibration or tone
+rules. The offline Adobe audit and reference tools are described in
+[camera parity](camera-parity.md).

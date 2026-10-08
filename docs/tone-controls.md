@@ -148,3 +148,13 @@ A photo takes one render of the reduced copy, after highlight recovery and the r
 - Contrast's pivot is predicted from two statistics of the photo to about 0.03; what Camera Raw measures exactly is unknown.
 - Auto's Whites: Lightroom's choice follows the brightest percentiles only loosely (90th percentile error about 30).
 - Positive Clarity at +100 is still 0.030 from Camera Raw on block averages (was 0.045). Negative Clarity and a mask's Clarity and Texture still use the earlier operators. Dehaze at ±100 needs its per-photo adaptation (airlight estimate) and spatial component.
+
+## Extended scene adaptation
+
+New edits use additional Whites measurements down to −5 EV, reducing the low-key
+clamping error of the older −2 EV measurement boundary. Adaptive Shadows uses a
+robust scene key and strengthens the lift when a large bright area reaches white; positive Dehaze
+scales its curve to scene brightness. Saved operator versions preserve earlier
+edits. These models remain approximations and require diverse scene validation.
+See [camera parity](camera-parity.md) for reproducible Camera Raw comparisons,
+acceptance gates and known limits.

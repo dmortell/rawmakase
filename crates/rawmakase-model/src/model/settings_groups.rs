@@ -235,14 +235,21 @@ impl SettingGroup {
         let (f, e) = (&from.effects, &mut to.effects);
         match self {
             WhiteBalance => {
+                to.white_balance_model = from.white_balance_model;
                 to.temperature = from.temperature;
                 to.tint = from.tint;
             }
             Exposure => to.exposure = from.exposure,
             Contrast => to.contrast = from.contrast,
             Highlights => to.highlights = from.highlights,
-            Shadows => to.shadows = from.shadows,
-            Whites => to.whites = from.whites,
+            Shadows => {
+                to.shadows = from.shadows;
+                to.shadows_model = from.shadows_model;
+            }
+            Whites => {
+                to.whites = from.whites;
+                to.whites_model = from.whites_model;
+            }
             Blacks => to.blacks = from.blacks,
             Texture => {
                 e.texture = f.texture;
@@ -252,7 +259,10 @@ impl SettingGroup {
                 e.clarity = f.clarity;
                 to.clarity_model = from.clarity_model;
             }
-            Dehaze => e.dehaze = f.dehaze,
+            Dehaze => {
+                e.dehaze = f.dehaze;
+                to.dehaze_model = from.dehaze_model;
+            }
             Vibrance => to.vibrance = from.vibrance,
             Saturation => to.saturation = from.saturation,
             TreatmentAndProfile => {
@@ -354,7 +364,6 @@ impl SettingGroup {
                 to.vibrance_model = from.vibrance_model;
                 to.black_white_model = from.black_white_model;
                 to.calibration_model = from.calibration_model;
-                to.whites_model = from.whites_model;
                 to.gamut_model = from.gamut_model;
             }
             Calibration => {
@@ -613,6 +622,9 @@ pub(crate) fn every_setting(r: &Recipe) -> Vec<(&'static str, Kind)> {
         black_white_model: _,
         calibration_model: _,
         whites_model: _,
+        white_balance_model: _,
+        shadows_model: _,
+        dehaze_model: _,
         gamut_model: _,
         temperature: _,
         tint: _,
@@ -720,7 +732,10 @@ pub(crate) fn every_setting(r: &Recipe) -> Vec<(&'static str, Kind)> {
         ("vibrance_model", Group(ProcessVersion)),
         ("black_white_model", Group(ProcessVersion)),
         ("calibration_model", Group(ProcessVersion)),
-        ("whites_model", Group(ProcessVersion)),
+        ("whites_model", Group(Whites)),
+        ("white_balance_model", Group(WhiteBalance)),
+        ("shadows_model", Group(Shadows)),
+        ("dehaze_model", Group(Dehaze)),
         ("gamut_model", Group(ProcessVersion)),
         ("temperature", Group(WhiteBalance)),
         ("tint", Group(WhiteBalance)),

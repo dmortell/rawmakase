@@ -75,6 +75,8 @@ const FIELDS: &[(&str, usize)] = &[
     ("LOCAL_PIVOT", 1),
     ("LOCAL_FAMILIES", 1),
     ("LOCAL_KEYS", 2),
+    ("LOCAL_SHADOW_SCALE", 1),
+    ("LOCAL_ORIGINAL_SHADOW_KEY", 1),
     ("GLOBAL_SH", 2),
 ];
 pub(crate) fn wgsl_prelude() -> String {
@@ -190,7 +192,10 @@ pub(crate) fn needs_map(r: &Recipe) -> bool {
 /// Whether a render needs the photo reduced for the Shadows/Highlights map or for
 /// measuring the photo's Contrast pivot; the stage cache keeps it between renders.
 pub(crate) fn needs_reduced(r: &Recipe) -> bool {
-    needs_map(r) || super::measures_contrast_pivot(r) || super::measures_whites(r)
+    needs_map(r)
+        || super::measures_contrast_pivot(r)
+        || super::measures_whites(r)
+        || super::measures_dehaze(r)
 }
 /// Parameters that stop after the tone stage (`tone_stage`, before the map), to tone
 /// the reduced photo the Shadows/Highlights map is built from on the GPU.
@@ -208,6 +213,8 @@ pub(crate) fn tone_params(im: Source, r: &Recipe) -> Option<PixelParams> {
 fn set_local(p: &mut PixelParams, local: &LocalToneMap) {
     p.set("LOCAL", &[1.]);
     p.set("LOCAL_KEYS", &local.keys);
+    p.set("LOCAL_SHADOW_SCALE", &[local.shadow_scale]);
+    p.set("LOCAL_ORIGINAL_SHADOW_KEY", &[local.original_shadow_key]);
     p.set("LOCAL_SIZE", &[local.width as f32, local.height as f32]);
     p.set("LOCAL_SCALE", &local.scale);
     let a = p.push(local.a.iter().copied());
@@ -308,7 +315,7 @@ fn fill(r: &Recipe, lut: CurveSet, matrix: [[f32; 3]; 3]) -> Option<PixelParams>
         None => -1.,
     };
     p.set("BASIC", &[basic]);
-    let tone = p.push(crate::develop::basic_tone::gpu_tables(&lut.photo.whites));
+    let tone = p.push(crate::develop::basic_tone::gpu_tables(&lut.photo));
     p.set("LOCAL_TONE", &[tone]);
     p.set(
         "LOCAL_PIVOT",
@@ -430,5 +437,26 @@ impl PixelParams {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod scene_measure_tests {
+    use super::*;
+    #[test]
+    fn adaptive_dehaze_requests_the_cached_reduced_photo() {
+        let mut r = Recipe {
+            engine: 4,
+            reference_curves: true,
+            dehaze_model: crate::model::operators::SceneToneModel::Adaptive,
+            ..Recipe::default()
+        };
+        r.effects.dehaze = 0.4;
+        assert!(needs_reduced(&r));
+        r.effects.dehaze = -0.4;
+        assert!(!needs_reduced(&r));
+        r.effects.dehaze = 0.4;
+        r.dehaze_model = crate::model::operators::SceneToneModel::Original;
+        assert!(!needs_reduced(&r));
     }
 }

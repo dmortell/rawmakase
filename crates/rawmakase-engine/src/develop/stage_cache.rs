@@ -179,6 +179,10 @@ fn stage_recipes(r: &Recipe) -> StageRecipes {
         black_white_model: _,
         calibration_model: _,
         whites_model: _,
+        white_balance_model: _,
+        // Scene statistics and local maps are rebuilt by the per-pixel stage.
+        shadows_model: _,
+        dehaze_model: _,
         gamut_model: _,
         contrast: _,
         whites: _,

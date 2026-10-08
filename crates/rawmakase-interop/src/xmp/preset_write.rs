@@ -218,6 +218,10 @@ pub(crate) fn group_of_key(key: &str) -> Option<SettingGroup> {
         "Saturation" => Saturation,
         "CameraProfile" | "ConvertToGrayscale" => TreatmentAndProfile,
         "ProcessVersion" => ProcessVersion,
+        "RAWmakaseWhiteBalanceModel" => WhiteBalance,
+        "RAWmakaseWhitesModel" | "RAWmakaseLegacyWhites" => Whites,
+        "RAWmakaseShadowsModel" => Shadows,
+        "RAWmakaseDehazeModel" => Dehaze,
         "Sharpness" | "EnableDetail" => Sharpening,
         "LuminanceSmoothing" => LuminanceNoiseReduction,
         "ColorNoiseReduction" => ColorNoiseReduction,
@@ -506,6 +510,64 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn process_only_presets_do_not_invent_tone_groups_or_versions() -> anyhow::Result<()> {
+        let m = crate::camera_data::Metadata::default();
+        let source = Recipe::with_profiles(&m, &[]);
+        let mut groups = GroupSelection::none();
+        groups.set(SettingGroup::ProcessVersion, GroupInclusion::Included);
+        let text = preset(
+            &source,
+            &PresetInfo::new("Process", "User Presets"),
+            &groups,
+        );
+        for text in [
+            text.clone(),
+            text.replace("RAWmakaseMarkers=\"3\"", "RAWmakaseMarkers=\"2\""),
+        ] {
+            let parsed = crate::xmp::parse(Path::new("process.xmp"), &text)?;
+            assert_eq!(crate::presets::user::groups_of(&parsed), groups);
+            let applied = parsed.apply(&source, &m, &[], None)?;
+            assert_eq!(applied.whites_model, source.whites_model);
+            assert_eq!(applied.shadows_model, source.shadows_model);
+            assert_eq!(applied.dehaze_model, source.dehaze_model);
+        }
+        Ok(())
+    }
+    #[test]
+    fn partial_tone_presets_keep_their_operator_versions() -> anyhow::Result<()> {
+        use crate::model::operators::{SceneToneModel, WhitesModel};
+        let m = crate::camera_data::Metadata::default();
+        let source = Recipe {
+            whites_model: WhitesModel::Extended,
+            shadows_model: SceneToneModel::Adaptive,
+            dehaze_model: SceneToneModel::Adaptive,
+            ..Recipe::default()
+        };
+        for (group, key) in [
+            (SettingGroup::Whites, "RAWmakaseWhitesModel"),
+            (SettingGroup::Shadows, "RAWmakaseShadowsModel"),
+            (SettingGroup::Dehaze, "RAWmakaseDehazeModel"),
+        ] {
+            let mut groups = GroupSelection::none();
+            groups.set(group, GroupInclusion::Included);
+            let text = preset(&source, &PresetInfo::new("Tone", "User Presets"), &groups);
+            let parsed = crate::xmp::parse(Path::new("tone.xmp"), &text)?;
+            assert!(parsed.settings.contains_key(key));
+            assert_eq!(crate::presets::user::groups_of(&parsed), groups);
+            let applied = parsed.apply(&Recipe::default(), &m, &[], None)?;
+            if group == SettingGroup::Whites {
+                assert_eq!(applied.whites_model, WhitesModel::Extended);
+            } else if group == SettingGroup::Shadows {
+                assert_eq!(applied.shadows_model, SceneToneModel::Adaptive);
+                assert_eq!(applied.dehaze_model, SceneToneModel::Original);
+            } else {
+                assert_eq!(applied.dehaze_model, SceneToneModel::Adaptive);
+                assert_eq!(applied.shadows_model, SceneToneModel::Original);
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn a_preset_holds_only_its_groups_and_reads_back_as_written() -> anyhow::Result<()> {
         let mut groups = GroupSelection::none();

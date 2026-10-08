@@ -8,6 +8,77 @@ fn xml(attrs: &str, body: &str) -> String {
         r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><r:RDF xmlns:r="{RDF}"><r:Description xmlns:c="{CRS}" {attrs}>{body}</r:Description></r:RDF></x:xmpmeta>"#
     )
 }
+#[test]
+fn xmp_roundtrip_keeps_old_and_new_scene_tone_operators() -> Result<()> {
+    use crate::model::operators::{SceneToneModel as S, WhitesModel as W};
+    let m = Metadata {
+        wb: [2., 1., 1.5],
+        daylight_wb: [2., 1., 1.5],
+        ..Default::default()
+    };
+    let fresh = Recipe::with_profiles(&m, &[]);
+    for (whites, scene) in [
+        (W::Original, S::Original),
+        (W::Adaptive, S::Original),
+        (W::Extended, S::Adaptive),
+    ] {
+        let r = Recipe {
+            white_balance_model: if scene == S::Original {
+                crate::model::operators::WhiteBalanceModel::Original
+            } else {
+                crate::model::operators::WhiteBalanceModel::Calibrated
+            },
+            whites_model: whites,
+            shadows_model: scene,
+            dehaze_model: scene,
+            whites: 1.,
+            shadows: 1.,
+            ..Recipe::default()
+        };
+        let text = write::packet(
+            &r,
+            &m,
+            &write::Photo {
+                settings: true,
+                ..Default::default()
+            },
+        );
+        let back = parse(Path::new("roundtrip.xmp"), &text)?.apply(&fresh, &m, &[], None)?;
+        assert_eq!(back.white_balance_model, r.white_balance_model);
+        assert_eq!(back.whites_model, whites);
+        assert_eq!(back.shadows_model, scene);
+        assert_eq!(back.dehaze_model, scene);
+    }
+    Ok(())
+}
+#[test]
+fn old_rawmakase_xmp_keeps_previous_tone_import_and_rejects_unknown_versions() -> Result<()> {
+    use crate::model::operators::{SceneToneModel, WhitesModel};
+    let m = Metadata::default();
+    let fresh = Recipe::with_profiles(&m, &[]);
+    let old = parse(
+        Path::new("old.xmp"),
+        &xml(
+            r#"c:RAWmakaseMarkers="2" c:Whites2012="100" c:Shadows2012="100""#,
+            "",
+        ),
+    )?
+    .apply(&fresh, &m, &[], None)?;
+    assert_eq!(old.whites_model, WhitesModel::Adaptive);
+    assert_eq!(old.shadows_model, SceneToneModel::Original);
+    let legacy = parse(
+        Path::new("old-preset.xmp"),
+        &xml(r#"c:RAWmakasePreset="1" c:Whites2012="100""#, ""),
+    )?
+    .apply(&Recipe::default(), &m, &[], None)?;
+    assert_eq!(legacy.whites_model, WhitesModel::Original);
+    let future = parse(
+        Path::new("future.xmp"),
+        &xml(r#"c:RAWmakaseShadowsModel="Unknown""#, ""),
+    )?;
+    assert!(future.apply(&fresh, &m, &[], None).is_err());
+    Ok(())
+}
 /// A photo whose Auto results are fixed, recording what applying settings asked.
 struct FakeMeasures {
     image: crate::camera_data::CameraImage,
