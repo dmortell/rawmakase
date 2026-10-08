@@ -473,7 +473,9 @@ fn normalise(m: Matrix, white: [f64; 3]) -> Matrix {
     m.map(|row| row.map(|v| v / max))
 }
 
-/// A chart ready to write: camera values in 0..=1 and the neutral for As Shot WB.
+/// A chart ready to write: camera values relative to the white level and the
+/// neutral for As Shot WB. Over-range values are kept, so a darker shot can scale
+/// them before the DNG writer clips at white.
 pub struct Rendered {
     pub camera: Vec<[f64; 3]>,
     pub as_shot_neutral: [f64; 3],
@@ -491,7 +493,7 @@ pub fn render(layout: &Layout, camera: &Camera, illuminant: Illuminant) -> Rende
     let camera = layout
         .scene()
         .into_iter()
-        .map(|rgb| apply(&to_camera, rgb).map(|v| (v * WHITE_LEVEL_SCALE).clamp(0., 1.)))
+        .map(|rgb| apply(&to_camera, rgb).map(|v| v * WHITE_LEVEL_SCALE))
         .collect();
     Rendered {
         camera,

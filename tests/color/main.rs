@@ -45,9 +45,10 @@ pub struct ChartSpec {
     /// Embed a named profile with forward matrices, as Adobe's DNG Converter does.
     /// Without it the DNG carries color matrices only.
     pub profile: bool,
-    /// The sensor's exposure relative to the standard chart (EV): the camera values,
-    /// clipped at white, scaled by 2^sensor_ev, as a darker shot of the same scene
-    /// (not the Exposure slider, which Camera Raw treats differently).
+    /// The sensor's exposure relative to the standard chart (EV): the camera values
+    /// scaled by 2^sensor_ev, then clipped at white by the DNG writer, as a darker
+    /// shot of the same scene (not the Exposure slider, which Camera Raw treats
+    /// differently).
     pub sensor_ev: f64,
 }
 
@@ -113,16 +114,12 @@ pub fn chart_path(name: &str) -> PathBuf {
 
 pub fn generate(spec: &ChartSpec, layout: &Layout) -> Vec<u8> {
     let rendered = chart::render(layout, &spec.camera, spec.illuminant);
-    let camera: Vec<_> = if spec.sensor_ev == 0. {
-        rendered.camera
-    } else {
-        let gain = spec.sensor_ev.exp2();
-        rendered
-            .camera
-            .iter()
-            .map(|p| p.map(|v| v.clamp(0., 1.) * gain))
-            .collect()
-    };
+    let gain = spec.sensor_ev.exp2();
+    let camera: Vec<_> = rendered
+        .camera
+        .iter()
+        .map(|p| p.map(|v| v * gain))
+        .collect();
     dng::write(
         &dng::Image {
             width: chart::WIDTH,
@@ -493,11 +490,7 @@ fn charts_decode_to_their_camera_values() {
             let i = ((p.y + p.h / 2) * chart::WIDTH + p.x + p.w / 2) as usize;
             for c in 0..3 {
                 let gain = wb[c] / wb[1];
-                let sensor = if spec.sensor_ev == 0. {
-                    expected.camera[i][c]
-                } else {
-                    expected.camera[i][c].clamp(0., 1.) * spec.sensor_ev.exp2()
-                };
+                let sensor = (expected.camera[i][c] * spec.sensor_ev.exp2()).clamp(0., 1.);
                 let want = sensor as f32 * gain;
                 let got = im.pixels[i][c];
                 // Half a 16-bit step, scaled by white balance, plus 0.1 %.
