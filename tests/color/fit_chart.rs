@@ -65,3 +65,26 @@ fn write_fit_chart() {
     )
     .unwrap();
 }
+
+/// Writes `sensor±N.00.dng` into RAWMAKASE_SENSOR_CHARTS: synthetic-d65 shot from
+/// −7 to +1 EV (sensor exposure, not the Exposure slider), for
+/// scripts/corpus/whites-scene.py. Positive EV clips at the DNG white level.
+#[test]
+#[ignore = "Writes sensor-exposure charts for scripts/corpus; needs RAWMAKASE_SENSOR_CHARTS"]
+fn write_sensor_charts() {
+    let out = std::path::PathBuf::from(std::env::var("RAWMAKASE_SENSOR_CHARTS").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let layout = crate::chart::Layout::new();
+    for ev in -7..=1 {
+        let spec = crate::ChartSpec {
+            name: String::new(),
+            camera: Camera::synthetic(),
+            illuminant: Illuminant::D65,
+            profile: true,
+            sensor_ev: f64::from(ev),
+        };
+        let path = out.join(format!("sensor{:+.2}.dng", f64::from(ev)));
+        assert!(!path.exists(), "refusing to replace {}", path.display());
+        std::fs::write(path, crate::generate(&spec, &layout)).unwrap();
+    }
+}

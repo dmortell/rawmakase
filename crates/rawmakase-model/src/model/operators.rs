@@ -253,6 +253,9 @@ pub enum WhitesModel {
     /// Camera Raw's curve for a photo whose highlights are as bright as this one's
     /// (docs/tone-controls.md#whites).
     Adaptive,
+    /// Camera Raw's curve on scene values before the profile's tone curve, for the
+    /// photo's scene brightness and the Exposure slider (docs/tone-controls.md#whites).
+    Scene,
 }
 impl WhitesModel {
     pub(crate) fn is_original(&self) -> bool {
@@ -421,7 +424,11 @@ mod tests {
         use WhitesModel as W;
         stored_as(
             W::Original,
-            &[(W::Original, "Original"), (W::Adaptive, "Adaptive")],
+            &[
+                (W::Original, "Original"),
+                (W::Adaptive, "Adaptive"),
+                (W::Scene, "Scene"),
+            ],
         );
         use WhiteBalanceModel as Wb;
         stored_as(

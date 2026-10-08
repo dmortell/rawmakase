@@ -38,6 +38,7 @@ mod recipe;
 pub mod red_eye;
 pub mod retouch;
 mod stage_cache;
+mod whites_scene_data;
 
 pub use crate::color::{mul, srgb_encode};
 pub use auto::{

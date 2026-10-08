@@ -33,7 +33,101 @@ impl WhitesTable {
 /// How much brighter (EV) photos behave than the chart with the same highlights: fitted
 /// on five photos, whose exposure is then predicted to 0.15 EV.
 const WHITES_OFFSET: f32 = 0.24;
-/// The 98th percentile of encoded luminance of a photo's pixels.
+
+impl WhitesTable {
+    /// Positive Whites as Camera Raw applies it, to scene values before the profile's
+    /// tone curve ([`WhitesModel::Scene`]): the curve for a photo whose 98th percentile
+    /// of scene luminance is `key`, at the Exposure slider's `exposure`, carried into the
+    /// encoded values the table maps by `neutral` (what the tone map and the profile do
+    /// to a neutral scene value). Negative Whites keeps the median curve.
+    ///
+    /// [`WhitesModel::Scene`]: crate::model::operators::WhitesModel::Scene
+    pub(crate) fn for_scene(key: f32, exposure: f32, neutral: impl Fn(f32) -> f32) -> Self {
+        // The sensor exposure of the chart whose curve fits: the photo's level less the
+        // part of it the Exposure slider made.
+        let sensor = key.max(1e-6).log2() + SCENE_KEY - exposure;
+        let inverse = Inverse::new(&neutral);
+        let mut table = WHITES;
+        for (row, k) in [(3, 0), (4, 1), (5, 2)] {
+            table[row] = std::array::from_fn(|i| {
+                let x = inverse.at(srgb_decode((i as f32 + 0.5) / 64.));
+                srgb_encode(neutral(scene_whites(sensor, exposure, k, x)).clamp(0., 1.))
+            });
+        }
+        Self(table)
+    }
+}
+/// The chart's sensor exposure (EV) whose Whites fits a photo at Exposure 0, less log2
+/// of the photo's 98th percentile of scene luminance: the median over 20 photos' Camera
+/// Raw renders, which it predicts to 0.29 EV (`scripts/corpus/whites-scene.py offset`).
+/// The synthetic chart itself fits 0.45 EV lower, closer to its own sensor exposure.
+const SCENE_KEY: f32 = 1.04;
+/// Camera Raw's positive Whites (`amount`: +25, +50, +100) at scene value `x`, for a
+/// scene shot at `sensor` EV relative to the chart with the Exposure slider at
+/// `exposure`: the measured curves, moved along the input between the measured sensor
+/// exposures and beyond them, interpolated between Exposure positions.
+fn scene_whites(sensor: f32, exposure: f32, amount: usize, x: f32) -> f32 {
+    use super::whites_scene_data::{CURVES, EXPOSURES, LOG_START, LOG_STEP, SENSOR};
+    let (j, we) = bracket(&EXPOSURES, exposure);
+    // log2 of one measured curve's output at log2 input `lx`; below the first sample
+    // the gain stays the first sample's.
+    let member = |i: usize, lx: f32| {
+        let at = ((lx - LOG_START) / LOG_STEP).max(0.);
+        let below = (lx - LOG_START).min(0.);
+        let n = CURVES[i][j][amount].len();
+        let k = (at as usize).min(n - 2);
+        let t = (at - k as f32).min(1.);
+        let sample = |c: &[f32]| c[k] + (c[k + 1] - c[k]) * t;
+        sample(&CURVES[i][j][amount]) * (1. - we) + sample(&CURVES[i][j + 1][amount]) * we + below
+    };
+    let lx = x.max(1e-12).log2();
+    let last = SENSOR.len() - 1;
+    let ly = if sensor <= SENSOR[0] {
+        member(0, lx + SENSOR[0] - sensor)
+    } else if sensor >= SENSOR[last] {
+        member(last, lx)
+    } else {
+        let i = ((sensor - SENSOR[0]) as usize).min(last - 1);
+        let t = sensor - SENSOR[i];
+        member(i, lx - t) * (1. - t) + member(i + 1, lx + 1. - t) * t
+    };
+    ly.min(0.).exp2()
+}
+/// The inverse of a nondecreasing map of scene values to display values, sampled in
+/// log2 steps of 1/16 from 2^-24 to 2^4.
+struct Inverse {
+    xs: Vec<f32>,
+    ys: Vec<f32>,
+}
+impl Inverse {
+    fn new(f: impl Fn(f32) -> f32) -> Self {
+        let xs: Vec<f32> = (0..=448).map(|i| (i as f32 / 16. - 24.).exp2()).collect();
+        let mut top = 0f32;
+        let ys = xs
+            .iter()
+            .map(|&x| {
+                top = top.max(f(x));
+                top
+            })
+            .collect();
+        Self { xs, ys }
+    }
+    /// The smallest sampled scene value that reaches `y`, linear between samples (and
+    /// proportional below the first).
+    fn at(&self, y: f32) -> f32 {
+        let i = self.ys.partition_point(|&v| v < y);
+        if i == 0 {
+            return self.xs[0] * y / self.ys[0].max(1e-12);
+        }
+        if i == self.ys.len() {
+            return self.xs[i - 1];
+        }
+        let (y0, y1) = (self.ys[i - 1], self.ys[i]);
+        let t = if y1 > y0 { (y - y0) / (y1 - y0) } else { 0. };
+        self.xs[i - 1] + (self.xs[i] - self.xs[i - 1]) * t
+    }
+}
+/// The 98th percentile of a photo's luminance values.
 pub(crate) fn highlights(mut luminance: Vec<f32>) -> f32 {
     if luminance.is_empty() {
         return 1.;
@@ -457,5 +551,38 @@ mod tests {
         let bright = WhitesTable::for_highlights(0.99);
         assert!(bright.0[5][40] < dim.whites.0[5][40]);
         assert_eq!(bright.0[..3], WhitesTable::original().0[..3]);
+    }
+
+    /// Scene Whites keeps stretching on darker scenes, where the earlier model stopped
+    /// at the chart's darkest measured exposure, and a darker shot is stretched more
+    /// than the same level reached with the Exposure slider (Camera Raw 18.7 on the
+    /// chart).
+    #[test]
+    fn scene_whites_follows_the_scene_and_the_exposure_slider() {
+        let tone = |x: f32| x / (x + 0.18);
+        let level = |key: f32, exposure: f32, at: f32| {
+            let table = WhitesTable::for_scene(key, exposure, tone);
+            slider(&SLIDER_VALUES, &table.0, 1., at)
+        };
+        let gray = srgb_encode(tone(0.01));
+        // Darker scenes (the same scene value is then nearer their highlights).
+        assert!(level(2f32.powi(-7), 0., gray) > level(2f32.powi(-5), 0., gray) + 0.05);
+        assert!(level(2f32.powi(-5), 0., gray) > level(2f32.powi(-3), 0., gray) + 0.05);
+        // Exposure −2 to the same key stretches less than 2 EV less light.
+        assert!(level(2f32.powi(-5), -2., gray) < level(2f32.powi(-5), 0., gray) - 0.02);
+        let table = WhitesTable::for_scene(2f32.powi(-6), 0., tone);
+        assert_eq!(table.0[..3], WhitesTable::original().0[..3]);
+        for row in &table.0[3..] {
+            assert!(row.windows(2).all(|v| v[1] + 1e-6 >= v[0]), "{row:?}");
+        }
+    }
+    #[test]
+    fn inverse_undoes_the_tone_map() {
+        let tone = |x: f32| (x / (x + 0.18)).min(1.);
+        let inverse = Inverse::new(tone);
+        for x in [1e-6, 1e-4, 0.01, 0.18, 0.7, 3.] {
+            let back = inverse.at(tone(x));
+            assert!((back / x - 1.).abs() < 0.01, "{x}: {back}");
+        }
     }
 }

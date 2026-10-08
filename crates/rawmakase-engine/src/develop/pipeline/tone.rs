@@ -65,9 +65,15 @@ impl CurveSet {
                 crate::develop::basic_tone::ContrastCurve::Pivot(contrast_pivot(im, r, matrix));
         }
         if whites {
-            lut.photo.whites = crate::develop::basic_tone::WhitesTable::for_highlights(
-                photo_highlights(im, r, matrix),
-            );
+            use crate::develop::basic_tone::WhitesTable;
+            lut.photo.whites = match r.whites_model {
+                crate::model::operators::WhitesModel::Scene => {
+                    WhitesTable::for_scene(scene_key(im, r, matrix), r.exposure, |x| {
+                        neutral_tone(r, x)
+                    })
+                }
+                _ => WhitesTable::for_highlights(photo_highlights(im, r, matrix)),
+            };
         }
         if pivot || whites {
             lut.basic = crate::develop::basic_tone::BasicTone::new(
@@ -180,7 +186,7 @@ pub(crate) fn measures_contrast_pivot(r: &Recipe) -> bool {
 pub(crate) fn measures_whites(r: &Recipe) -> bool {
     r.engine >= 4
         && r.reference_curves
-        && r.whites_model == crate::model::operators::WhitesModel::Adaptive
+        && r.whites_model != crate::model::operators::WhitesModel::Original
         && (r.whites > 0.
             || r.masks
                 .iter()
@@ -210,6 +216,21 @@ fn photo_highlights(im: Source, r: &Recipe, matrix: [[f32; 3]; 3]) -> f32 {
             let rgb = tone_stage(*p, &im.metadata, r, &lut, matrix, None).0;
             srgb_encode(crate::develop::local_tone::luminance(rgb).clamp(0., 1.))
         })
+        .collect();
+    crate::develop::basic_tone::highlights(luminance)
+}
+/// What [`WhitesModel::Scene`] follows of the photo: the 98th percentile of the scene
+/// luminance of its reduced copy before the tone map and the profile's tone curve, its
+/// Exposure included.
+///
+/// [`WhitesModel::Scene`]: crate::model::operators::WhitesModel::Scene
+fn scene_key(im: Source, r: &Recipe, matrix: [[f32; 3]; 3]) -> f32 {
+    let small = measured_copy(im);
+    let lut = CurveSet::new(r);
+    let luminance: Vec<f32> = small
+        .pixels
+        .par_iter()
+        .map(|p| scene_luminance(*p, &im.metadata, r, &lut, matrix).max(0.))
         .collect();
     crate::develop::basic_tone::highlights(luminance)
 }

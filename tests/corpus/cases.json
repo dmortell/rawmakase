@@ -79,19 +79,34 @@
    "name": "whites-50",
    "settings": {
     "Whites2012": "-50"
-   }
+   },
+   "charts": [
+    "synthetic-d65",
+    "synthetic-d65-under2",
+    "synthetic-d65-under4"
+   ]
   },
   {
    "name": "whites+50",
    "settings": {
     "Whites2012": "+50"
-   }
+   },
+   "charts": [
+    "synthetic-d65",
+    "synthetic-d65-under2",
+    "synthetic-d65-under4"
+   ]
   },
   {
    "name": "whites+25",
    "settings": {
     "Whites2012": "+25"
-   }
+   },
+   "charts": [
+    "synthetic-d65",
+    "synthetic-d65-under2",
+    "synthetic-d65-under4"
+   ]
   },
   {
    "name": "pair-exposure-1.5-whites+50",
@@ -2034,7 +2049,22 @@
    "name": "whites+100",
    "settings": {
     "Whites2012": "+100"
-   }
+   },
+   "charts": [
+    "synthetic-d65",
+    "synthetic-d65-under2",
+    "synthetic-d65-under4"
+   ]
+  },
+  {
+   "name": "pair-exposure+2-whites+100",
+   "settings": {
+    "Exposure2012": "+2.00",
+    "Whites2012": "+100"
+   },
+   "charts": [
+    "synthetic-d65-under4"
+   ]
   },
   {
    "name": "blacks-100",

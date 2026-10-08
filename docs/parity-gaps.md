@@ -8,7 +8,7 @@ These controls were fitted to Camera Raw renders and match within the default-re
 
 ## Tone
 
-- **Positive Whites** follows the photo's highlights as Camera Raw's does ([tone controls](tone-controls.md#whites)), from five photos and the chart at 13 exposures: its extra error over the default render on those photos is 0.0068 (was 0.024). The chart at its own exposure is slightly further off than before (Whites +50 1.52 mean ΔE00, was 1.37), as photos behave 0.24 EV brighter than the chart. Edits saved before this keep the median curve.
+- **Positive Whites** follows the scene before the profile tone curve, as Camera Raw's does ([tone controls](tone-controls.md#before-the-profile-tone-curve)): on 16 photos Whites +100 is 4.2 mean ΔE00 from Camera Raw (was 10.1; low-key photos were 25–35). How a photo selects Camera Raw's curve is predicted to about 0.3 EV, which still leaves +100 3–8 ΔE00 off on some photos, and the synthetic chart selects 0.45 EV apart from photos (Whites +100 on it: 3.4, was 2.6). Edits saved before this keep their curves.
 - **Contrast** follows Camera Raw's curve, after Whites and Blacks, at a pivot predicted from the photo ([tone controls](tone-controls.md#contrast)); the prediction is within about 0.03 of the pivot that fits each photo best, and its extra error over the default render on photos is 0.003–0.007. Edits saved before this keep the averaged curve.
 - **Dehaze at ±100** adapts per photo and has a spatial part. RAWmakase uses one averaged curve: extra error +0.036/+0.044, while ±40 is within +0.014.
 - **Shadows +100 / Highlights −100** reach +0.010/+0.006 extra error, because the strength also adapts per photo.

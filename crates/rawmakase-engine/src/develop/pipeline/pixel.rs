@@ -49,6 +49,72 @@ pub(super) fn tone_stage(
     matrix: [[f32; 3]; 3],
     local: Option<Local>,
 ) -> ([f32; 3], f32) {
+    let scene = scene_stage(p, m, r, lut, matrix, local);
+    let rgb = scene
+        .rgb
+        .map(|v| v * tone_map(r, scene.shaped) / scene.luminance);
+    let rgb = mul(FROM_2020, rgb);
+    let rgb = if r.engine >= 3 {
+        r.profile
+            .as_ref()
+            .map_or(rgb, |p| p.finish(rgb, r.profile_tone))
+    } else {
+        rgb
+    };
+    (rgb, scene.clipped_chroma)
+}
+/// A camera sample in scene-linear Rec. 2020 RGB, before the tone map and the camera
+/// profile's tone curve.
+struct Scene {
+    rgb: [f32; 3],
+    luminance: f32,
+    /// The luminance the legacy tone sliders leave (`luminance` from engine 4 on).
+    shaped: f32,
+    clipped_chroma: f32,
+}
+/// The scene luminance of a camera sample before the tone map and the profile's tone
+/// curve: what Camera Raw's positive Whites follows of the photo.
+pub(super) fn scene_luminance(
+    p: [f32; 3],
+    m: &Metadata,
+    r: &Recipe,
+    lut: &CurveSet,
+    matrix: [[f32; 3]; 3],
+) -> f32 {
+    scene_stage(p, m, r, lut, matrix, None).shaped
+}
+/// What the tone map and the camera profile do to a neutral scene value: its display
+/// luminance.
+pub(super) fn neutral_tone(r: &Recipe, x: f32) -> f32 {
+    let rgb = mul(FROM_2020, [tone_map(r, x); 3]);
+    let rgb = if r.engine >= 3 {
+        r.profile
+            .as_ref()
+            .map_or(rgb, |p| p.finish(rgb, r.profile_tone))
+    } else {
+        rgb
+    };
+    crate::color::luminance(rgb)
+}
+fn tone_map(r: &Recipe, shaped: f32) -> f32 {
+    if r.engine < 3 {
+        shaped * (2.2 * shaped + 0.05) / (shaped * (2.2 * shaped + 0.6) + 0.1)
+    } else if r.profile_tone && r.profile.is_some() {
+        shaped
+    } else {
+        // Scene-referred shoulder anchored at 18% middle gray. No per-channel clipping.
+        let x = shaped.max(0.);
+        x / (x + 0.82)
+    }
+}
+fn scene_stage(
+    p: [f32; 3],
+    m: &Metadata,
+    r: &Recipe,
+    lut: &CurveSet,
+    matrix: [[f32; 3]; 3],
+    local: Option<Local>,
+) -> Scene {
     let sensor_peak = (0..3)
         .map(|c| p[c] / m.wb[c].max(0.001))
         .fold(0f32, f32::max);
@@ -113,26 +179,12 @@ pub(super) fn tone_stage(
         + highlights * high * 2.
         + whites * high.powi(3)
         + blacks * shadow.powi(3);
-    let shaped = y * 2f32.powf(ev);
-    let mapped = if r.engine < 3 {
-        shaped * (2.2 * shaped + 0.05) / (shaped * (2.2 * shaped + 0.6) + 0.1)
-    } else if r.profile_tone && r.profile.is_some() {
-        shaped
-    } else {
-        // Scene-referred shoulder anchored at 18% middle gray. No per-channel clipping.
-        let x = shaped.max(0.);
-        x / (x + 0.82)
-    };
-    rgb = rgb.map(|v| v * mapped / y);
-    let rgb = mul(FROM_2020, rgb);
-    let rgb = if r.engine >= 3 {
-        r.profile
-            .as_ref()
-            .map_or(rgb, |p| p.finish(rgb, r.profile_tone))
-    } else {
-        rgb
-    };
-    (rgb, clipped_chroma)
+    Scene {
+        rgb,
+        luminance: y,
+        shaped: y * 2f32.powf(ev),
+        clipped_chroma,
+    }
 }
 /// The tone curves, the color mixer and Point Color: linear display RGB as Point
 /// Color leaves it, and Visualize Range's selection.

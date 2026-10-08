@@ -1253,8 +1253,6 @@ fn a_lens_profile_choice_belongs_to_the_lens_corrections_panel() {
 /// moved by Clarity's or Texture's gain.
 #[test]
 fn contrast_and_whites_are_measured_on_the_photo_alone() {
-    use crate::develop::basic_tone::{ContrastCurve, TYPICAL_PIVOT};
-    use crate::model::operators::ContrastModel;
     let mut im = fixture();
     im.metadata.cam_xyz = [
         [1.1434, -0.4948, -0.121],
@@ -1271,20 +1269,35 @@ fn contrast_and_whites_are_measured_on_the_photo_alone() {
     }
     let profile =
         crate::camera_profiles::CameraProfile::camera_matrix_default(&im.metadata).unwrap();
+    let profile = std::sync::Arc::new(profile);
+    for whites_model in [
+        crate::model::operators::WhitesModel::Adaptive,
+        crate::model::operators::WhitesModel::Scene,
+    ] {
+        measured_on_the_photo_alone(&im, &profile, whites_model);
+    }
+}
+fn measured_on_the_photo_alone(
+    im: &CameraImage,
+    profile: &std::sync::Arc<crate::camera_profiles::CameraProfile>,
+    whites_model: crate::model::operators::WhitesModel,
+) {
+    use crate::develop::basic_tone::{ContrastCurve, TYPICAL_PIVOT};
+    use crate::model::operators::ContrastModel;
     let r = Recipe {
-        profile: Some(std::sync::Arc::new(profile)),
+        profile: Some(profile.clone()),
         reference_curves: true,
         reference_color: true,
         reference_calibration: true,
         contrast_model: ContrastModel::Adaptive,
         contrast: 0.6,
-        whites_model: crate::model::operators::WhitesModel::Adaptive,
+        whites_model,
         whites: 0.5,
         shadows: 0.3,
         ..Default::default()
     };
     let matrix = profile_matrix(&im.metadata, &r);
-    let plain = CurveSet::for_image((&im).into(), &r, matrix, false);
+    let plain = CurveSet::for_image(im.into(), &r, matrix, false);
     let ContrastCurve::Pivot(pivot) = plain.photo.contrast else {
         panic!("{:?}", plain.photo.contrast);
     };
@@ -1293,9 +1306,9 @@ fn contrast_and_whites_are_measured_on_the_photo_alone() {
         plain.photo.whites,
         crate::develop::basic_tone::WhitesTable::original()
     );
-    let tone = pixel_params::tone_params((&im).into(), &r).unwrap();
+    let tone = pixel_params::tone_params(im.into(), &r).unwrap();
     assert_eq!(tone.get("LOCAL_PIVOT"), [pivot]);
-    let map_pass = CurveSet::with_photo_measures((&im).into(), &r, matrix);
+    let map_pass = CurveSet::with_photo_measures(im.into(), &r, matrix);
     assert_eq!(map_pass.photo, plain.photo);
     assert_eq!(
         map_pass.basic.as_ref().map(|b| &b.lut),
@@ -1304,18 +1317,18 @@ fn contrast_and_whites_are_measured_on_the_photo_alone() {
     let gain: Vec<f32> = (0..im.pixels.len())
         .map(|i| 0.5 + (i % 7) as f32 * 0.2)
         .collect();
-    let gained = CurveSet::with_photo_measures(Source::new(&im, Some(&gain)), &r, matrix);
+    let gained = CurveSet::with_photo_measures(Source::new(im, Some(&gain)), &r, matrix);
     assert_eq!(gained.photo, plain.photo);
     // Nor the measured Texture, which makes a new image.
     let textured = crate::develop::texture::TextureDetail::of(
-        &im,
+        im,
         1.,
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap()
-    .apply(&im, 1.);
+    .apply(im, 1.);
     let source = Source {
-        untextured: Some(&im),
+        untextured: Some(im),
         ..Source::new(&textured, None)
     };
     let textured = CurveSet::with_photo_measures(source, &r, matrix);

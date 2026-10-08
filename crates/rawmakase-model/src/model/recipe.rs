@@ -595,7 +595,7 @@ impl Recipe {
         recipe.black_white_model = crate::model::operators::BlackWhiteModel::Chart;
         recipe.calibration_model = crate::model::operators::CalibrationModel::Measured;
         recipe.white_balance_model = crate::model::operators::WhiteBalanceModel::Calibrated;
-        recipe.whites_model = crate::model::operators::WhitesModel::Adaptive;
+        recipe.whites_model = crate::model::operators::WhitesModel::Scene;
         recipe.gamut_model = crate::model::operators::GamutModel::Clip;
         recipe.set_color_noise_defaults(crate::model::operators::NoiseModel::Measured);
         recipe.use_camera_baseline(m);

@@ -45,6 +45,10 @@ pub struct ChartSpec {
     /// Embed a named profile with forward matrices, as Adobe's DNG Converter does.
     /// Without it the DNG carries color matrices only.
     pub profile: bool,
+    /// The sensor's exposure relative to the standard chart (EV): the camera values,
+    /// clipped at white, scaled by 2^sensor_ev, as a darker shot of the same scene
+    /// (not the Exposure slider, which Camera Raw treats differently).
+    pub sensor_ev: f64,
 }
 
 /// Every committed chart: the synthetic camera under four illuminants with an
@@ -63,6 +67,7 @@ pub fn chart_specs() -> Vec<ChartSpec> {
         camera: Camera::synthetic(),
         illuminant,
         profile: true,
+        sensor_ev: 0.,
     })
     .collect();
     specs.push(ChartSpec {
@@ -70,13 +75,25 @@ pub fn chart_specs() -> Vec<ChartSpec> {
         camera: Camera::synthetic(),
         illuminant: Illuminant::D65,
         profile: false,
+        sensor_ev: 0.,
     });
+    // Low-key shots of the same scene, for the tone sliders that follow the photo.
+    for ev in [2, 4] {
+        specs.push(ChartSpec {
+            name: format!("synthetic-d65-under{ev}"),
+            camera: Camera::synthetic(),
+            illuminant: Illuminant::D65,
+            profile: true,
+            sensor_ev: -f64::from(ev),
+        });
+    }
     for camera in cameras() {
         specs.push(ChartSpec {
             name: format!("{}-d65", camera.id),
             camera: camera.normalised(),
             illuminant: Illuminant::D65,
             profile: true,
+            sensor_ev: 0.,
         });
     }
     specs
@@ -96,11 +113,21 @@ pub fn chart_path(name: &str) -> PathBuf {
 
 pub fn generate(spec: &ChartSpec, layout: &Layout) -> Vec<u8> {
     let rendered = chart::render(layout, &spec.camera, spec.illuminant);
+    let camera: Vec<_> = if spec.sensor_ev == 0. {
+        rendered.camera
+    } else {
+        let gain = spec.sensor_ev.exp2();
+        rendered
+            .camera
+            .iter()
+            .map(|p| p.map(|v| v.clamp(0., 1.) * gain))
+            .collect()
+    };
     dng::write(
         &dng::Image {
             width: chart::WIDTH,
             height: chart::HEIGHT,
-            camera: &rendered.camera,
+            camera: &camera,
             as_shot_neutral: rendered.as_shot_neutral,
             profile: spec.profile,
             black_render: dng::BlackRender::Auto,
@@ -466,7 +493,12 @@ fn charts_decode_to_their_camera_values() {
             let i = ((p.y + p.h / 2) * chart::WIDTH + p.x + p.w / 2) as usize;
             for c in 0..3 {
                 let gain = wb[c] / wb[1];
-                let want = expected.camera[i][c] as f32 * gain;
+                let sensor = if spec.sensor_ev == 0. {
+                    expected.camera[i][c]
+                } else {
+                    expected.camera[i][c].clamp(0., 1.) * spec.sensor_ev.exp2()
+                };
+                let want = sensor as f32 * gain;
                 let got = im.pixels[i][c];
                 // Half a 16-bit step, scaled by white balance, plus 0.1 %.
                 assert!(
@@ -903,4 +935,40 @@ fn auto_black_white_mix_matches_camera_raw_on_the_chart() {
         .max()
         .unwrap();
     assert!(worst <= 3, "{mix:?} against Camera Raw's {CAMERA_RAW:?}");
+}
+
+/// Positive Whites on darker shots of the chart (2 and 4 EV less light on the sensor)
+/// against Camera Raw 18.7, which stretches low-key scenes much further than bright
+/// ones and treats a darker shot differently from the Exposure slider (#354).
+#[test]
+fn low_key_whites_follows_camera_raw() {
+    let layout = Layout::new();
+    let cases = cases();
+    let mut failures = Vec::new();
+    for chart in ["synthetic-d65-under2", "synthetic-d65-under4"] {
+        let reference = PatchFile::read(&corpus().join(format!("camera-raw/{chart}.json")))
+            .expect("Camera Raw reference");
+        let only: BTreeMap<_, _> = reference
+            .cases
+            .iter()
+            .filter(|(name, _)| name.contains("whites+"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let current = render_chart(chart, &layout, &cases, &[], embedded_profiles, Some(&only));
+        for (name, expected) in &only {
+            let values = current[name].as_ref().unwrap();
+            let c = compare(expected, values, |i| layout.patches[i].group != "wide");
+            println!(
+                "{chart} / {name}: mean ΔE00 {:.2}, p95 {:.2}",
+                c.mean, c.p95
+            );
+            // +100 stays about 8–11 off: photos and the chart select Camera Raw's curve
+            // 0.45 EV apart, and the offset follows the photos (`SCENE_KEY`).
+            let limit = if name.contains("+100") { 12. } else { 2. };
+            if c.mean > limit {
+                failures.push(format!("{chart} / {name}: mean ΔE00 {:.2}", c.mean));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -22,6 +22,7 @@ Patch files hold the mean encoded-sRGB value (16-bit) of each patch, one case pe
 
 - `synthetic-d65`, `-d50`, `-a`, `-f2`: an invented camera (no manufacturer or Adobe data) under daylight, D50, tungsten and fluorescent light, with an embedded named profile (color and forward matrices), as Adobe's DNG Converter writes.
 - `synthetic-d65-matrix-only`: the same scene with color matrices only, as some third-party DNGs are.
+- `synthetic-d65-under2`, `-under4`: the same scene shot 2 and 4 EV darker (the sensor values scaled, not the Exposure slider), for the tone sliders that follow how bright the photo is. Their cases are the Whites ones.
 - `<camera>-d65`: one chart per camera in `cameras.json`, claiming that camera's make and model with its LibRaw matrix. With the camera's Adobe Standard DCP (private tier) this tests the per-camera profile path without a photo from that camera.
 
 Mosaic charts are used because RAWmakase rejects three-channel `LinearRaw` DNGs. Flat patch interiors demosaic exactly.
@@ -73,6 +74,7 @@ All run from the repository root with a Python that has numpy (`/opt/homebrew/bi
 - `scripts/corpus/contrast-curve.py`: renders Contrast on `synthetic-d65`, prints the chart's Contrast table for `basic_tone_data.rs`, and with the private photo references fits the photo's Contrast pivot.
 - `scripts/corpus/color-grading.py`: renders Color Grading's fitting cases (about 740: every region at twelve hues and four saturations, Shadows, Midtones and Highlights over a grid of Blending and Balance, the Luminance sliders, and held-out checks) on `synthetic-d65` as 16-bit ProPhoto RGB and fits `crates/rawmakase-engine/src/develop/color_grade_curves.bin` from them. The renders' patch means stay outside the repository.
 - `scripts/corpus/whites-curve.py`: renders Whites on `synthetic-d65` at 13 exposures, prints the adaptive Whites tables for `basic_tone_data.rs`, and with the private photo references fits the offset between photos and the chart.
+- `scripts/corpus/whites-scene.py`: writes `synthetic-d65` shot at sensor exposures −7 to +1 EV, renders Whites on them at Exposure −4 to +4, writes `whites_scene_data.rs` (Whites before the profile tone curve), and with Camera Raw photo references fits how a photo selects its curve.
 - `scripts/corpus/parametric-curve.py`: renders the parametric curve's fitting cases (about 380 region and split settings) on `synthetic-d65` and fits `crates/rawmakase-engine/src/develop/parametric.bin` from them. The renders' patch means stay outside the repository.
 - `scripts/corpus/pixls.py`: `manifest` (rebuild `pixls.json`), `download` (checks hashes and the budget), `cameras` (rebuild `cameras.json` from the corpus RAWs).
 - `scripts/corpus/migrate-references.py`: reduce existing reference TIFFs (sweeps, Lightroom exports) to block files.
