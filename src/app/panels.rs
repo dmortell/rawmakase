@@ -109,6 +109,32 @@ impl PanelLayout {
         }
         layout
     }
+    /// The layout after `change`, and what it hid for the next Tab or
+    /// Shift+Tab to bring back. Given what the last one hid, the same key
+    /// again brings that layout back, unless the panels changed since.
+    pub(super) fn changed_from(
+        self,
+        change: PanelChange,
+        last: Option<Tabbed>,
+    ) -> (Self, Option<Tabbed>) {
+        if let Some(last) = last
+            && last.change == change
+            && last.after == self
+        {
+            return (last.before, None);
+        }
+        let next = self.changed(change);
+        let hid =
+            !matches!(change, PanelChange::Toggle(_)) && self.hidden_by(next).next().is_some();
+        (
+            next,
+            hid.then_some(Tabbed {
+                change,
+                before: self,
+                after: next,
+            }),
+        )
+    }
     /// The panels shown here and hidden in `next`.
     pub(super) fn hidden_by(self, next: Self) -> impl Iterator<Item = WorkspacePanel> {
         [
@@ -119,6 +145,15 @@ impl PanelLayout {
         .into_iter()
         .filter(move |panel| self.shown(*panel) && !next.shown(*panel))
     }
+}
+
+/// What a Tab or Shift+Tab hid: the layout before, to bring back, and the
+/// layout it left, which must still stand for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Tabbed {
+    change: PanelChange,
+    before: PanelLayout,
+    after: PanelLayout,
 }
 
 /// Develop's panels and the Library's, as the session keeps them.
@@ -155,7 +190,11 @@ impl Editor {
     /// Returns whether the panels changed.
     pub(super) fn change_panels(&mut self, change: PanelChange) -> bool {
         let layout = self.panels.of(self.module);
-        let next = layout.changed(change);
+        let last = self
+            .tabbed
+            .filter(|(module, _)| *module == self.module)
+            .map(|(_, tabbed)| tabbed);
+        let (next, tabbed) = layout.changed_from(change, last);
         for panel in layout.hidden_by(next) {
             match (self.module, panel) {
                 (Module::Library, WorkspacePanel::Right) => {
@@ -171,6 +210,7 @@ impl Editor {
             }
         }
         self.panels.set(self.module, next);
+        self.tabbed = tabbed.map(|tabbed| (self.module, tabbed));
         if let Err(e) = self.save_session() {
             self.status = format!("Panel layout not saved: {e:#}");
         }
@@ -206,101 +246,60 @@ impl Editor {
     }
 }
 
-/// The width of the strip on a window edge that holds a panel's arrow.
-const EDGE: f32 = 12.;
-
 impl Editor {
-    /// The arrow strips on the left and right window edges, outside the side
-    /// panels. Draw after the filmstrip, so they sit above it as the panels do.
-    pub(super) fn side_edges(&mut self, ui: &mut egui::Ui) {
-        for panel in [WorkspacePanel::Left, WorkspacePanel::Right] {
-            self.edge(ui, panel);
+    /// The workspace bar's button that hides or shows `panel`: the panel's
+    /// icon while it shows, its "open" icon while hidden.
+    pub(super) fn panel_toggle(&mut self, ui: &mut egui::Ui, panel: WorkspacePanel) {
+        use super::icons::Icon;
+        let shown = self.panel_shown(panel);
+        let (icon, name, key) = match (panel, shown) {
+            (WorkspacePanel::Left, true) => (Icon::PanelLeft, "the left panel", "F7"),
+            (WorkspacePanel::Left, false) => (Icon::PanelLeftOpen, "the left panel", "F7"),
+            (WorkspacePanel::Right, true) => (Icon::PanelRight, "the right panel", "F8"),
+            (WorkspacePanel::Right, false) => (Icon::PanelRightOpen, "the right panel", "F8"),
+            (WorkspacePanel::Filmstrip, true) => (Icon::PanelBottom, "the filmstrip", "F6"),
+            (WorkspacePanel::Filmstrip, false) => (Icon::PanelBottomOpen, "the filmstrip", "F6"),
+        };
+        let verb = if shown { "Hide" } else { "Show" };
+        let palette = super::theme::palette(ui.ctx());
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(26.), egui::Sense::hover());
+        let response = ui.interact(rect, toggle_id(panel), egui::Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, 4., palette.gray(45));
         }
-    }
-    /// The arrow strip on the bottom window edge, under the filmstrip. Draw
-    /// before any other bottom panel.
-    pub(super) fn bottom_edge(&mut self, ui: &mut egui::Ui) {
-        self.edge(ui, WorkspacePanel::Filmstrip);
-    }
-    /// Lightroom's panel arrow: a thin strip on the window edge beside `panel`,
-    /// with a triangle pointing the way the panel would go. A click on the
-    /// strip hides or shows the panel.
-    fn edge(&mut self, ui: &mut egui::Ui, panel: WorkspacePanel) {
-        let visibility = self.panels.of(self.module).visibility(panel);
-        let fill = super::theme::palette(ui.ctx()).gray(22);
-        let frame = egui::Frame::new().fill(fill);
-        let show = |ui: &mut egui::Ui| edge_arrow(ui, panel, visibility);
-        let clicked = match panel {
-            WorkspacePanel::Left => egui::Panel::left("left-edge")
-                .exact_size(EDGE)
-                .resizable(false)
-                .show_separator_line(false)
-                .frame(frame)
-                .show(ui, show),
-            WorkspacePanel::Right => egui::Panel::right("right-edge")
-                .exact_size(EDGE)
-                .resizable(false)
-                .show_separator_line(false)
-                .frame(frame)
-                .show(ui, show),
-            WorkspacePanel::Filmstrip => egui::Panel::bottom("bottom-edge")
-                .exact_size(EDGE)
-                .resizable(false)
-                .show_separator_line(false)
-                .frame(frame)
-                .show(ui, show),
-        }
-        .inner;
-        if clicked {
+        let color = palette.gray(if response.hovered() { 235 } else { 160 });
+        super::icons::paint_at(ui.painter(), icon, rect.center(), 15., color);
+        if response
+            .on_hover_text(format!("{verb} {name} · {key}"))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
             self.change_panels(PanelChange::Toggle(panel));
         }
     }
 }
-
-/// Draws an edge strip's arrow, filling the strip; returns whether it was clicked.
-fn edge_arrow(ui: &mut egui::Ui, panel: WorkspacePanel, visibility: Visibility) -> bool {
-    let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
-    let palette = super::theme::palette(ui.ctx());
-    let color = if response.hovered() {
-        palette.gray(230)
-    } else {
-        palette.gray(120)
-    };
-    // Shown, the arrow points off the window, the way the panel goes when hidden.
-    let outward = match panel {
-        WorkspacePanel::Left => egui::vec2(-1., 0.),
-        WorkspacePanel::Right => egui::vec2(1., 0.),
-        WorkspacePanel::Filmstrip => egui::vec2(0., 1.),
-    };
-    let tip = match visibility {
-        Visibility::Shown => outward,
-        Visibility::Hidden => -outward,
-    };
-    let across = egui::vec2(tip.y, tip.x);
-    let c = rect.center();
-    let size = 4.;
-    ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            c + tip * size,
-            c - tip * size + across * size,
-            c - tip * size - across * size,
-        ],
-        color,
-        egui::Stroke::NONE,
-    ));
-    let (name, key) = match panel {
-        WorkspacePanel::Left => ("the left panel", "F7"),
-        WorkspacePanel::Right => ("the right panel", "F8"),
-        WorkspacePanel::Filmstrip => ("the filmstrip", "F6"),
-    };
-    let verb = match visibility {
-        Visibility::Shown => "Hide",
-        Visibility::Hidden => "Show",
-    };
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!("{verb} {name} · {key}"))
-        .clicked()
+/// The side panels the user resizes by dragging their inner edge, by id.
+const RESIZABLE: [&str; 4] = ["library-sidebar", "library-info", "presets", "adjustments"];
+/// Shows the resize cursor over a side panel's edge, or while it is dragged.
+/// The edge's grab area reaches over the Library's grid, whose cells are
+/// drawn after the panel and so take the hover: egui then never shows its
+/// cursor, though a drag there still resizes the panel.
+pub(super) fn keep_resize_cursor(ctx: &egui::Context) {
+    let dragged = ctx.dragged_id();
+    let on_edge = RESIZABLE.iter().any(|panel| {
+        ctx.read_response(egui::Id::new(*panel).with("__resize"))
+            .is_some_and(|edge| {
+                edge.dragged()
+                    || (edge.contains_pointer() && dragged.is_none_or(|id| id == edge.id))
+            })
+    });
+    if on_edge {
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+}
+/// The workspace bar's toggle for `panel`, by a fixed id.
+pub(super) fn toggle_id(panel: WorkspacePanel) -> egui::Id {
+    egui::Id::new(("panel-toggle", panel as u8))
 }
 
 /// The session's panels, or all shown if what was saved does not read.
@@ -333,6 +332,39 @@ mod tests {
         // One side already hidden: Tab hides the other first.
         let left_only = layout(SHOWN, HIDDEN, SHOWN);
         assert_eq!(left_only.changed(PanelChange::Sides), sides_hidden);
+    }
+
+    #[test]
+    fn a_second_tab_brings_back_what_the_first_hid() {
+        // The left panel hidden with its button; Tab hides the right one.
+        let right_only = layout(HIDDEN, SHOWN, SHOWN);
+        let (hidden, tabbed) = right_only.changed_from(PanelChange::Sides, None);
+        assert_eq!(hidden, layout(HIDDEN, HIDDEN, SHOWN));
+        // Tab again: the right panel alone comes back.
+        let (back, tabbed) = hidden.changed_from(PanelChange::Sides, tabbed);
+        assert_eq!(back, right_only);
+        assert_eq!(tabbed, None);
+
+        // Shift+Tab restores the layout it hid, filmstrip and all.
+        let (none, tabbed) = right_only.changed_from(PanelChange::All, None);
+        assert_eq!(none, layout(HIDDEN, HIDDEN, HIDDEN));
+        assert_eq!(none.changed_from(PanelChange::All, tabbed).0, right_only);
+
+        // A panel changed in between: Tab starts from the panels as they are.
+        let (hidden, tabbed) = right_only.changed_from(PanelChange::Sides, None);
+        let (filmstrip_gone, tabbed) =
+            hidden.changed_from(PanelChange::Toggle(WorkspacePanel::Filmstrip), tabbed);
+        assert_eq!(tabbed, None);
+        assert_eq!(
+            filmstrip_gone.changed_from(PanelChange::Sides, tabbed).0,
+            layout(SHOWN, SHOWN, HIDDEN)
+        );
+        // Shift+Tab after Tab is its own change, not Tab's undo.
+        let (sides, tabbed) = right_only.changed_from(PanelChange::Sides, None);
+        assert_eq!(
+            sides.changed_from(PanelChange::All, tabbed).0,
+            layout(HIDDEN, HIDDEN, HIDDEN)
+        );
     }
 
     #[test]

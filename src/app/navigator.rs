@@ -114,7 +114,7 @@ pub(super) enum Change {
 
 /// The Navigator panel: `photo` is the whole photo's texture and size,
 /// `shown` the part in view as fractions (x, y, width, height). Without a
-/// `zoom` it is only the photo, as in the Library's grid.
+/// `zoom` it is only the photo, with no levels to choose.
 pub(super) fn navigator(
     ui: &mut egui::Ui,
     photo: Option<Photo>,

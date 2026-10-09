@@ -23,6 +23,17 @@ impl Action {
         }
     }
 }
+/// A folder of the Folders panel, with its subfolders, to remove from the
+/// catalog.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FolderRemoval {
+    /// The catalog it was chosen in; its folder ids name nothing elsewhere.
+    pub(crate) catalog: crate::catalog::CatalogLocation,
+    pub(crate) name: String,
+    pub(crate) folders: HashSet<FolderId>,
+    /// Photos in it and its subfolders, as the panel counts them.
+    pub(crate) photos: usize,
+}
 /// Where the Library was: its source, filter bar and selection, for undo to
 /// return to.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +115,9 @@ pub(crate) struct Library {
     cache: textures::PreviewTextures,
     /// A virtual copy command from a thumbnail menu, for the editor.
     copy_request: Option<CopyAction>,
+    /// A folder chosen in the Folders panel to be removed, for the editor
+    /// to confirm.
+    removal_request: Option<FolderRemoval>,
     copy_names: copy_name::CopyNames,
     /// Title, caption and the other descriptive fields being shown or typed.
     fields: metadata_fields::Fields,
@@ -197,6 +211,7 @@ impl Library {
             cache: textures::PreviewTextures::new(&ctx),
             ctx,
             copy_request: None,
+            removal_request: None,
             copy_names: Default::default(),
             fields: Default::default(),
             done: Vec::new(),
@@ -555,6 +570,9 @@ impl Library {
     pub(super) fn take_copy_request(&mut self) -> Option<CopyAction> {
         self.copy_request.take()
     }
+    pub(in crate::app) fn take_removal_request(&mut self) -> Option<FolderRemoval> {
+        self.removal_request.take()
+    }
     /// Creates a virtual copy of `id` and selects it.
     pub(super) fn create_virtual_copy(&mut self, id: PhotoId) -> Result<Committed<PhotoId>> {
         let made = self.session.create_virtual_copy(id)?;
@@ -590,6 +608,59 @@ impl Library {
                 false
             }
         }
+    }
+    /// Removes `folders` and their photos from the catalog, leaving the files;
+    /// returns the photos removed. The Library shows All Photographs if it
+    /// showed one of them. An error means nothing was removed.
+    pub(in crate::app) fn remove_folders(
+        &mut self,
+        folders: &HashSet<FolderId>,
+        name: &str,
+    ) -> Result<Committed<Vec<PhotoId>>> {
+        // Forgotten first: once removed, their ids can be reused, so their
+        // previews must go even if removing or reading the catalog again
+        // fails. Copies of these photos are kept with them.
+        let going: Vec<PhotoId> = self
+            .session
+            .photos
+            .iter()
+            .filter(|p| folders.contains(&p.folder))
+            .map(|p| p.id)
+            .collect();
+        for photo in &self.session.photos {
+            if going.contains(&photo.id) || photo.master.is_some_and(|m| going.contains(&m)) {
+                self.cache.forget(photo.id);
+                self.screen.forget(photo.id);
+            }
+        }
+        let ids: Vec<FolderId> = folders.iter().copied().collect();
+        let removed = self.session.remove_folders(&ids)?;
+        if self
+            .filters
+            .folder_scope
+            .as_ref()
+            .is_some_and(|scope| scope.iter().any(|f| folders.contains(f)))
+        {
+            self.selected_folder.clear();
+            self.filters.folder_scope = None;
+        }
+        for id in &removed.value {
+            self.selection.forget_photo(*id);
+        }
+        if self.listed_after(&removed.listed, "Folder removed") {
+            let n = removed.value.len();
+            self.message = format!(
+                "Removed {name} and its {n} photo{} from the catalog. The files are still on disk.",
+                if n == 1 { "" } else { "s" }
+            );
+        } else {
+            // The session dropped the removed photos from its lists anyway;
+            // what is shown follows them before anything reads those lists.
+            self.reloaded();
+        }
+        self.start_capture_times();
+        self.start_photo_info();
+        Ok(removed)
     }
     /// Removes virtual copy `id`; returns its master, which is selected. An
     /// error means the copy is still there.

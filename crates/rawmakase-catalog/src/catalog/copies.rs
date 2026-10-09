@@ -1,6 +1,6 @@
 //! Lightroom's virtual copies: photos of the same file with their own edit,
 //! metadata and name.
-use super::db::{Reads, sql};
+use super::db::{Reads, Write, sql};
 use super::{Catalog, PhotoId};
 use anyhow::{Context, Result, ensure};
 
@@ -123,21 +123,24 @@ impl Catalog {
             self.master_of(id)?.is_some(),
             "Only virtual copies can be removed"
         );
-        self.db.write(|w| {
-            super::edit_rows::delete_edits(w, id)?;
-            for delete in [
-                sql!("DELETE FROM lightroom_history WHERE photo=?"),
-                sql!("DELETE FROM photo_keywords WHERE photo=?"),
-                sql!("DELETE FROM collection_photos WHERE photo=?"),
-                sql!("DELETE FROM photo_info WHERE photo=?"),
-            ]
-            .into_iter()
-            .chain(super::descriptive::DELETE_ROWS)
-            {
-                w.execute(delete, &[&id])?;
-            }
-            w.execute(sql!("DELETE FROM photos WHERE id=?"), &[&id])?;
-            Ok(())
-        })
+        self.db.write(|w| delete_photo(w, id))
     }
+}
+/// Deletes photo `id` from the catalog with its edit, history, snapshots and
+/// metadata, and its place in collections. Its file is untouched.
+pub(super) fn delete_photo(w: &mut Write<'_>, id: PhotoId) -> Result<()> {
+    super::edit_rows::delete_edits(w, id)?;
+    for delete in [
+        sql!("DELETE FROM lightroom_history WHERE photo=?"),
+        sql!("DELETE FROM photo_keywords WHERE photo=?"),
+        sql!("DELETE FROM collection_photos WHERE photo=?"),
+        sql!("DELETE FROM photo_info WHERE photo=?"),
+    ]
+    .into_iter()
+    .chain(super::descriptive::DELETE_ROWS)
+    {
+        w.execute(delete, &[&id])?;
+    }
+    w.execute(sql!("DELETE FROM photos WHERE id=?"), &[&id])?;
+    Ok(())
 }

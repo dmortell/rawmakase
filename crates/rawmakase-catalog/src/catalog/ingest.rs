@@ -71,6 +71,52 @@ impl Catalog {
     pub fn add_folder(&mut self, folder: &Path) -> Result<usize> {
         Ok(self.add_folder_with(folder, &Default::default())?.0)
     }
+    /// Lightroom's Remove for a folder: `folders` leave the catalog with
+    /// their photos (and those photos' virtual copies), edits and metadata,
+    /// and a root left without folders goes too. Nothing on disk is touched.
+    /// Returns the photos removed; their ids may be given to new photos.
+    pub fn remove_folders(&mut self, folders: &[FolderId]) -> Result<Vec<PhotoId>> {
+        self.db.write(|w| {
+            let mut photos = BTreeSet::new();
+            let mut roots = BTreeSet::new();
+            for folder in folders {
+                let root: Option<RootId> =
+                    w.read_optional(sql!("SELECT root FROM folders WHERE id=?"), &[folder])?;
+                roots.extend(root);
+                let ids: Vec<PhotoId> =
+                    w.read(sql!("SELECT id FROM photos WHERE folder=?"), &[folder])?;
+                photos.extend(ids);
+            }
+            // A copy is kept with its master's folder; one found elsewhere
+            // still can't outlive its master.
+            for master in photos.clone() {
+                let copies: Vec<PhotoId> =
+                    w.read(sql!("SELECT id FROM photos WHERE master_id=?"), &[&master])?;
+                photos.extend(copies);
+            }
+            for photo in &photos {
+                super::copies::delete_photo(w, *photo)?;
+            }
+            for folder in folders {
+                super::locations::forget_folder_locations(w, *folder)?;
+                w.execute(
+                    sql!("DELETE FROM folder_mappings WHERE folder=?"),
+                    &[folder],
+                )?;
+                w.execute(sql!("DELETE FROM folder_paths WHERE folder=?"), &[folder])?;
+                w.execute(sql!("DELETE FROM folders WHERE id=?"), &[folder])?;
+            }
+            for root in &roots {
+                let left: Option<FolderId> =
+                    w.read_optional(sql!("SELECT id FROM folders WHERE root=?"), &[root])?;
+                if left.is_none() {
+                    w.execute(sql!("DELETE FROM folder_locations WHERE root=?"), &[root])?;
+                    w.execute(sql!("DELETE FROM roots WHERE id=?"), &[root])?;
+                }
+            }
+            Ok(photos.into_iter().collect())
+        })
+    }
     /// `import_folder` for callers that can't ask which location a folder
     /// belongs to: they get an error instead.
     pub fn add_folder_with(

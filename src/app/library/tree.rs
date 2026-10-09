@@ -60,6 +60,9 @@ pub(super) enum TreeAction {
     Select(String, HashSet<FolderId>),
     RelinkRoot(RootId),
     RelinkFolder(FolderId),
+    /// Remove from Catalog: the folder's name, it and its subfolders, and
+    /// their photos' count.
+    Remove(String, HashSet<FolderId>, usize),
 }
 pub(super) fn folder_tree_row(
     ui: &mut egui::Ui,
@@ -116,7 +119,7 @@ pub(super) fn folder_tree_row(
     let can_relink = node.root.is_some() || node.folder.is_some();
     let label_rect = Rect::from_min_max(
         Pos2::new(x + 26., rect.top()),
-        Pos2::new(rect.right() - 62., rect.bottom()),
+        Pos2::new(rect.right() - 44., rect.bottom()),
     );
     let text = egui::WidgetText::from(node.name.clone()).into_galley(
         ui,
@@ -130,17 +133,12 @@ pub(super) fn folder_tree_row(
         palette.gray(if active { 235 } else { 190 }),
     );
     painter.text(
-        Pos2::new(rect.right() - 27., y),
+        Pos2::new(rect.right() - 10., y),
         Align2::RIGHT_CENTER,
         node.count.to_string(),
         FontId::proportional(10.),
         palette.gray(125),
     );
-    if can_relink && (response.hovered() || node.root.is_some()) {
-        for dx in [-3., 0., 3.] {
-            painter.circle_filled(Pos2::new(rect.right() - 12. + dx, y), 1., palette.gray(160));
-        }
-    }
     let relink = || {
         node.root
             .map(TreeAction::RelinkRoot)
@@ -149,9 +147,7 @@ pub(super) fn folder_tree_row(
     let mut action = None;
     if response.clicked() && !crate::app::widgets::context_clicked(&response) {
         let pointer = response.interact_pointer_pos().unwrap_or(rect.center());
-        if can_relink && pointer.x > rect.right() - 24. {
-            action = relink()
-        } else if !node.children.is_empty() && pointer.x < x + 6. {
+        if !node.children.is_empty() && pointer.x < x + 6. {
             if open {
                 expanded.remove(&node.key);
             } else {
@@ -166,7 +162,7 @@ pub(super) fn folder_tree_row(
         node.path.display(),
         node.count,
         if can_relink {
-            " including subfolders\nClick … or right-click to locate"
+            " including subfolders\nRight-click to locate or remove"
         } else {
             ""
         }
@@ -182,6 +178,14 @@ pub(super) fn folder_tree_row(
                 .clicked()
         {
             action = relink();
+            ui.close();
+        }
+        if !node.ids.is_empty() && ui.button("Remove from Catalog…").clicked() {
+            action = Some(TreeAction::Remove(
+                node.name.clone(),
+                node.ids.clone(),
+                node.count,
+            ));
             ui.close();
         }
     });

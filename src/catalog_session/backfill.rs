@@ -60,6 +60,12 @@ impl CatalogSession {
             self.backfill.capture = Some(Reader::start(todo, self.wake.clone(), read_capture));
         }
     }
+    /// Drops the readers under way, whose results could otherwise land on
+    /// photos given the ids of photos removed meanwhile. The next starts read
+    /// what is still missing.
+    pub(super) fn stop_backfill(&mut self) {
+        self.backfill = Backfill::default();
+    }
     /// Lets the next [`Self::start_capture_times`] try every photo again, as
     /// once more photos are online.
     pub(crate) fn retry_capture_times(&mut self) {

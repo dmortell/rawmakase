@@ -141,4 +141,32 @@ impl CatalogSession {
             listed: self.reload(),
         })
     }
+    /// Removes `folders` and their photos from the catalog, leaving the files,
+    /// and reads the lists again; returns the photos removed. An error means
+    /// nothing was removed; once this returns, their ids may be given to new
+    /// photos, even when reading the lists failed. Reading capture times and
+    /// photo info stops; start it again for the photos left.
+    pub(crate) fn remove_folders(
+        &mut self,
+        folders: &[crate::catalog::FolderId],
+    ) -> Result<Committed<Vec<PhotoId>>> {
+        self.stop_backfill();
+        let removed = self.catalog.remove_folders(folders)?;
+        let listed = self.reload();
+        if listed.is_err() {
+            // The lists as they were, less what is gone from the catalog: the
+            // removed ids may be given to new photos.
+            self.photos.retain(|p| !removed.contains(&p.id));
+            self.folders.retain(|f| !folders.contains(&f.id));
+            let roots: std::collections::HashSet<_> = self.folders.iter().map(|f| f.root).collect();
+            self.roots.retain(|(root, ..)| roots.contains(root));
+            for members in self.collection_photos.values_mut() {
+                members.retain(|id| !removed.contains(id));
+            }
+        }
+        Ok(Committed {
+            value: removed,
+            listed,
+        })
+    }
 }
