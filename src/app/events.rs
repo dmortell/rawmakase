@@ -241,12 +241,7 @@ impl Editor {
                     }
                     // Pixels asked for by a hover or loupe that has since ended are
                     // not kept.
-                    let samples = samples.filter(|_| self.preview.samples_requested);
-                    if region {
-                        self.preview.region_samples = samples;
-                    } else {
-                        self.preview.samples = samples;
-                    }
+                    self.preview.keep_samples(region, samples);
                     self.preview.samples_recipe = self.preview.pending_recipe.clone();
                     self.preview.mode = self.preview.pending_mode;
                     if !region {

@@ -469,14 +469,11 @@ impl Editor {
         if self.wants_samples() {
             // The loupe and the readout read the shown pixels, which renders keep only
             // while they are wanted.
-            if !self.preview.samples_requested {
-                self.preview.samples_requested = true;
+            if self.preview.ask_for_samples() {
                 self.schedule();
             }
-        } else if self.preview.samples_requested {
-            self.preview.samples_requested = false;
-            self.preview.samples = None;
-            self.preview.region_samples = None;
+        } else {
+            self.preview.stop_asking_for_samples();
         }
         if self.view.picks_color()
             && let Some(pos) = response.hover_pos()
