@@ -132,10 +132,18 @@ impl Editor {
             || self.document.catalog_photo.is_some()
             || self.document.path.is_some();
         if !opening {
+            let empty = self
+                .library
+                .as_ref()
+                .is_none_or(|l| l.session.photos.is_empty());
             ui.painter().text(
                 area.center(),
                 egui::Align2::CENTER_CENTER,
-                "Pick a photo in the Library to edit it",
+                if empty {
+                    "Add photos in the Library to start editing"
+                } else {
+                    "Pick a photo in the Library to edit it"
+                },
                 egui::FontId::proportional(15.),
                 palette.gray(120),
             );

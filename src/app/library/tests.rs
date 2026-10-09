@@ -210,24 +210,12 @@ fn metadata_edits_persist_toggle_and_advance_through_filtered_photos() -> Result
 #[test]
 fn tree_locate_action_uses_the_clicked_root() {
     let ctx = egui::Context::default();
+    ctx.enable_accesskit();
     let root = FolderNode::root(RootId(42), "Photos".into(), "/missing".into());
     let mut expanded = HashSet::new();
-    let mut target = egui::Pos2::ZERO;
-    let mut located = None;
-    for frame in 0..3 {
-        let events = if frame == 0 {
-            vec![]
-        } else {
-            vec![
-                egui::Event::PointerMoved(target),
-                egui::Event::PointerButton {
-                    pos: target,
-                    button: egui::PointerButton::Primary,
-                    pressed: frame == 1,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ]
-        };
+    let mut frame = |events: Vec<egui::Event>| {
+        let mut action = None;
+        let mut row = egui::Rect::NOTHING;
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -238,20 +226,49 @@ fn tree_locate_action_uses_the_clicked_root() {
                 ..Default::default()
             },
             |ui| {
-                target = egui::Pos2::new(
-                    ui.available_rect_before_wrap().right() - 12.,
-                    ui.cursor().top() + 14.5,
-                );
-                if let Some(TreeAction::RelinkRoot(id)) =
-                    folder_tree_row(ui, &root, 0, &mut expanded, "")
-                {
-                    located = Some(id);
-                }
+                let top = ui.cursor().top();
+                action = folder_tree_row(ui, &root, 0, &mut expanded, "");
+                row = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
             },
         );
         output.textures_delta.clear();
-    }
-    assert_eq!(located, Some(RootId(42)));
+        (action, row, output.platform_output.accesskit_update)
+    };
+    let click = |at: egui::Pos2, button: egui::PointerButton, pressed: bool| {
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    };
+    let (_, row, _) = frame(vec![]);
+    // A click at the row's right end, where "…" once was, selects the root.
+    let end = egui::pos2(row.right() - 12., row.center().y);
+    frame(click(end, egui::PointerButton::Primary, true));
+    let (action, _, _) = frame(click(end, egui::PointerButton::Primary, false));
+    assert!(matches!(action, Some(TreeAction::Select(..))));
+    // Locating it is in the right-click menu.
+    frame(click(end, egui::PointerButton::Secondary, true));
+    frame(click(end, egui::PointerButton::Secondary, false));
+    let (_, _, update) = frame(vec![]);
+    let update = update.expect("accessibility is on");
+    let item = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Locate root folder…"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the menu offers Locate");
+    let at = egui::pos2(
+        ((item.x0 + item.x1) / 2.) as f32,
+        ((item.y0 + item.y1) / 2.) as f32,
+    );
+    frame(click(at, egui::PointerButton::Primary, true));
+    let (action, _, _) = frame(click(at, egui::PointerButton::Primary, false));
+    assert!(matches!(action, Some(TreeAction::RelinkRoot(RootId(42)))));
 }
 #[test]
 fn batched_availability_distinguishes_files_directories_and_missing_paths() -> Result<()> {

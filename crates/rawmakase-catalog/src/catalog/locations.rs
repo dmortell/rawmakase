@@ -160,6 +160,46 @@ pub struct FolderLocation {
     pub path: PathBuf,
 }
 
+/// Folder `folder`'s root and logical path, if it is in the catalog.
+fn logical_path(db: &impl Reads, folder: FolderId) -> Result<Option<(RootId, String)>> {
+    row! {
+        struct Logical {
+            root: RootId,
+            original: String,
+            relative: String,
+            logical: Option<String>,
+        }
+    }
+    let f: Option<Logical> = db.read_optional(
+        sql!(
+            "SELECT f.root, r.original_path, f.relative_path, p.path
+             FROM folders f JOIN roots r ON r.id=f.root
+             LEFT JOIN folder_paths p ON p.folder=f.id WHERE f.id=?"
+        ),
+        &[&folder],
+    )?;
+    Ok(f.map(|f| {
+        (
+            f.root,
+            f.logical
+                .unwrap_or_else(|| logical_from_legacy(&f.original, &f.relative)),
+        )
+    }))
+}
+/// Forgets where folder `folder` is on every computer, as it leaves the
+/// catalog: a location left behind would refuse the folder added again as
+/// being elsewhere. A root's own location goes with the root.
+pub(super) fn forget_folder_locations(w: &mut Write<'_>, folder: FolderId) -> Result<()> {
+    if let Some((root, logical)) = logical_path(w, folder)?
+        && !logical.is_empty()
+    {
+        w.execute(
+            sql!("DELETE FROM folder_locations WHERE root=? AND relative_path=?"),
+            &[&root, &logical],
+        )?;
+    }
+    Ok(())
+}
 /// The names of a logical path.
 pub(super) fn names(logical: &str) -> impl Iterator<Item = &str> {
     logical.split('/').filter(|n| !n.is_empty())
@@ -365,30 +405,7 @@ impl Catalog {
     }
     /// A folder's root and logical path.
     fn logical_path(&self, folder: FolderId) -> Result<(RootId, String)> {
-        row! {
-            struct Logical {
-                root: RootId,
-                original: String,
-                relative: String,
-                logical: Option<String>,
-            }
-        }
-        let f: Logical = self
-            .db
-            .read_optional(
-                sql!(
-                    "SELECT f.root, r.original_path, f.relative_path, p.path
-                     FROM folders f JOIN roots r ON r.id=f.root
-                     LEFT JOIN folder_paths p ON p.folder=f.id WHERE f.id=?"
-                ),
-                &[&folder],
-            )?
-            .context("Unknown folder")?;
-        Ok((
-            f.root,
-            f.logical
-                .unwrap_or_else(|| logical_from_legacy(&f.original, &f.relative)),
-        ))
+        logical_path(&self.db, folder)?.context("Unknown folder")
     }
     /// Finds root `id` at `path` on this computer, keeping its folders'
     /// own locations.

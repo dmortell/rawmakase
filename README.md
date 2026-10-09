@@ -127,7 +127,7 @@ rawmakase Photos.rawmakase    # open a catalog
 rawmakase photo.dng           # add the photo's folder to the last catalog and edit it
 ```
 
-Photos are edited through the Library. A photo dropped onto the window or passed on the command line has its folder added to the open catalog, then opens in Develop; edits it got in earlier releases (its `photo.rawmakase.json`) come along. You can also drop a catalog onto the window. The first launch offers to create a catalog or import a Lightroom catalog; both are available later from the **Catalog** menu. The camera's embedded JPEG shows immediately while the RAW develops.
+Photos are edited through the Library. The first launch starts a catalog named Photos in RAWmakase's data folder and asks for a folder of photos; to keep your Lightroom Classic folders, ratings and edits, import its catalog instead. Both, and other catalogs, are available later from the **Catalog** menu. Folders dropped onto the window, one or several, are added to the open catalog; right-click a folder in the Library's Folders panel to remove it and its photos from the catalog (the files stay on disk). A photo dropped there or passed on the command line has its folder added, then opens in Develop; edits it got in earlier releases (its `photo.rawmakase.json`) come along. You can also drop a catalog onto the window. The camera's embedded JPEG shows immediately while the RAW develops.
 
 Useful shortcuts:
 
@@ -151,7 +151,7 @@ Useful shortcuts:
 
 Double-click a slider or a color grading wheel to reset it, type its value for precision, or hover a slider and press Up or Down (Shift for ten steps). On a grading wheel, Shift keeps a drag to hue or saturation and Cmd/Ctrl moves it finely. Drag sideways in the histogram to move Blacks, Shadows, Exposure, Highlights or Whites, whichever region you start in.
 
-Tab hides the side panels to give the photo the window; so does a click on the arrow at a window edge, which hides or shows that panel alone.
+Tab hides the side panels to give the photo the window, and Shift+Tab the filmstrip too; pressed again, each brings back the panels it hid. The panel buttons at either end of the top bar hide or show the left panel, the right panel or the filmstrip alone.
 
 The switch in a panel's header turns the panel off without losing its settings, as in Lightroom; right-click a header for Solo Mode, where opening one panel closes the others on that side.
 

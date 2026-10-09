@@ -515,7 +515,7 @@ impl Editor {
             self.status = progress.text();
         }
     }
-    pub(super) fn imported(&mut self, summary: Box<Summary>, ctx: &egui::Context) {
+    pub(super) fn imported(&mut self, summary: Summary, ctx: &egui::Context) {
         self.importing = None;
         if summary.imported > 0 {
             match summary.kind {
@@ -549,7 +549,7 @@ impl Editor {
             self.status.push_str(": ");
             self.status.push_str(&summary.details(1));
         }
-        self.onboarding.last_import = Some(summary);
+        self.onboarding.imported(summary);
     }
 }
 

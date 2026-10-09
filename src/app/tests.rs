@@ -1460,6 +1460,269 @@ fn a_photo_from_outside_the_library_is_added_and_opened() -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Delivers worker events until no catalog work is under way.
+fn settle_catalog(editor: &mut Editor, ctx: &egui::Context) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while editor.activity.is_busy() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        editor.events(ctx);
+    }
+    assert!(
+        !editor.activity.is_busy(),
+        "the catalog work never finished"
+    );
+}
+
+#[test]
+fn a_dropped_folder_is_added_itself_not_its_parent() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    crate::catalog::Catalog::create(&path)?;
+    let parent = dir.path().join("card");
+    let trip = parent.join("trip");
+    std::fs::create_dir_all(&trip)?;
+    std::fs::write(trip.join("in.ARW"), b"identity fixture")?;
+    std::fs::write(parent.join("beside.ARW"), b"identity fixture")?;
+    let ctx = egui::Context::default();
+    let mut editor =
+        Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    editor.library = Some(Box::new(library::Library::load(&path, ctx.clone())?));
+    // As if dropped on the window.
+    editor.open(trip);
+    settle_catalog(&mut editor, &ctx);
+    let names: Vec<_> = editor
+        .library
+        .as_ref()
+        .map(|l| {
+            l.session
+                .photos
+                .iter()
+                .map(|p| p.filename.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(names, ["in.ARW"]);
+    assert!(editor.pending_photo.is_none());
+    assert!(editor.module == Module::Library);
+    Ok(())
+}
+
+#[test]
+fn dropping_several_folders_adds_each_of_them() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    crate::catalog::Catalog::create(&path)?;
+    let (trip, home, card) = (
+        dir.path().join("trip"),
+        dir.path().join("home"),
+        dir.path().join("card"),
+    );
+    for folder in [&trip, &home, &card] {
+        std::fs::create_dir(folder)?;
+    }
+    std::fs::write(trip.join("t.ARW"), b"trip")?;
+    std::fs::write(home.join("h.ARW"), b"home")?;
+    std::fs::write(card.join("c1.ARW"), b"card 1")?;
+    std::fs::write(card.join("c2.ARW"), b"card 2")?;
+    let ctx = egui::Context::default();
+    let mut editor =
+        Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    editor.library = Some(Box::new(library::Library::load(&path, ctx.clone())?));
+    let names = |editor: &Editor| -> Vec<String> {
+        let mut names: Vec<String> = editor
+            .library
+            .as_ref()
+            .map(|l| {
+                l.session
+                    .photos
+                    .iter()
+                    .map(|p| p.filename.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+
+    editor.dropped(vec![trip, home]);
+    // Writing the catalog: closing the window waits for it.
+    assert!(editor.activity.is_changing_folder());
+    settle_catalog(&mut editor, &ctx);
+    assert_eq!(names(&editor), ["h.ARW", "t.ARW"]);
+
+    // Two photos of one folder add it once, and open neither in Develop.
+    editor.dropped(vec![card.join("c1.ARW"), card.join("c2.ARW")]);
+    settle_catalog(&mut editor, &ctx);
+    assert_eq!(names(&editor), ["c1.ARW", "c2.ARW", "h.ARW", "t.ARW"]);
+    assert!(editor.module == Module::Library);
+    assert_eq!(editor.document.catalog_photo, None);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dropped_folder_that_fails_leaves_the_others_added() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    crate::catalog::Catalog::create(&path)?;
+    let (good, locked) = (dir.path().join("good"), dir.path().join("locked"));
+    std::fs::create_dir(&good)?;
+    std::fs::create_dir(&locked)?;
+    std::fs::write(good.join("g.ARW"), b"good")?;
+    std::fs::write(locked.join("l.ARW"), b"locked")?;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))?;
+    // Root reads it anyway; nothing to test then.
+    if std::fs::read_dir(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))?;
+        return Ok(());
+    }
+    let ctx = egui::Context::default();
+    let mut editor =
+        Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    editor.library = Some(Box::new(library::Library::load(&path, ctx.clone())?));
+    editor.dropped(vec![good, locked.clone()]);
+    settle_catalog(&mut editor, &ctx);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))?;
+    let library = editor.library.as_ref().unwrap();
+    let names: Vec<_> = library.session.photos.iter().map(|p| &p.filename).collect();
+    assert_eq!(names, ["g.ARW"]);
+    assert!(
+        editor.status.contains("Not added: locked"),
+        "{}",
+        editor.status
+    );
+    Ok(())
+}
+
+#[test]
+fn removing_a_folder_closes_its_photo_and_leaves_the_files() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    let photos = dir.path().join("photos");
+    std::fs::create_dir_all(photos.join("trip"))?;
+    std::fs::write(photos.join("home.ARW"), b"identity fixture")?;
+    std::fs::write(photos.join("trip/away.ARW"), b"identity fixture 2")?;
+    crate::catalog::Catalog::create(&path)?.add_folder(&photos)?;
+    let ctx = egui::Context::default();
+    let mut editor =
+        Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    editor.library = Some(Box::new(library::Library::load(&path, ctx)?));
+    let library = editor.library.as_ref().unwrap();
+    let away = library
+        .session
+        .photos
+        .iter()
+        .find(|p| p.filename == "away.ARW")
+        .unwrap()
+        .id;
+    let trip: std::collections::HashSet<_> = library
+        .session
+        .folders
+        .iter()
+        .filter(|f| f.relative.trim_end_matches('/') == "trip")
+        .map(|f| f.id)
+        .collect();
+    assert_eq!(trip.len(), 1);
+    editor.document.catalog_photo = Some(away);
+    editor.module = Module::Develop;
+    // Still loading, and the locked reference too.
+    let (loading, _) = editor.load.start();
+    editor.reference.photo = Some(away);
+    editor.reference.locked = true;
+
+    // Chosen in another catalog, confirmed after this one opened: refused.
+    let removal = |catalog| library::FolderRemoval {
+        catalog,
+        name: "trip".into(),
+        folders: trip.clone(),
+        photos: 1,
+    };
+    let other = crate::catalog::CatalogLocation::File(dir.path().join("other.rawmakase"));
+    editor.remove_folders(&removal(other));
+    assert_eq!(editor.library.as_ref().unwrap().session.photos.len(), 2);
+    assert!(
+        editor.status.contains("another catalog"),
+        "{}",
+        editor.status
+    );
+
+    editor.remove_folders(&removal(crate::catalog::CatalogLocation::File(path)));
+    let names: Vec<_> = editor
+        .library
+        .as_ref()
+        .unwrap()
+        .session
+        .photos
+        .iter()
+        .map(|p| p.filename.clone())
+        .collect();
+    assert_eq!(names, ["home.ARW"]);
+    assert_eq!(editor.document.catalog_photo, None);
+    assert!(editor.module == Module::Library);
+    assert!(editor.status.contains("still on disk"), "{}", editor.status);
+    // The load's late results are no longer its.
+    assert!(!editor.load.is_running());
+    assert_ne!(editor.load.id(), loading);
+    assert_eq!(editor.reference.photo, None);
+    assert!(photos.join("trip/away.ARW").is_file());
+    Ok(())
+}
+
+#[test]
+fn a_first_launch_opens_a_new_catalog_beside_the_session() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let session = || crate::app::session::Session {
+        no_update_checks: true,
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let mut editor =
+        Editor::with_context(&ctx, None, session(), Some(dir.path().join("session.json")));
+    settle_catalog(&mut editor, &ctx);
+    let catalog = dir.path().join("Photos.rawmakase");
+    assert!(catalog.is_file());
+    assert_eq!(
+        editor
+            .library
+            .as_ref()
+            .map(|l| l.session.catalog.location()),
+        Some(&crate::catalog::CatalogLocation::File(catalog.clone()))
+    );
+    // The next launch opens it as the last catalog, not as a new one.
+    editor.save_session()?;
+    drop(editor);
+    let saved: crate::app::session::Session =
+        serde_json::from_slice(&std::fs::read(dir.path().join("session.json"))?)?;
+    assert_eq!(saved.last_path.as_ref(), Some(&catalog));
+
+    // A catalog used before that is missing now (on an unplugged drive) is
+    // not replaced by a new one.
+    let elsewhere = tempfile::tempdir()?;
+    let mut editor = Editor::with_context(
+        &ctx,
+        None,
+        crate::app::session::Session {
+            last_path: Some(elsewhere.path().join("Offline.rawmakase")),
+            ..session()
+        },
+        Some(elsewhere.path().join("session.json")),
+    );
+    settle_catalog(&mut editor, &ctx);
+    assert!(editor.library.is_none());
+    assert!(!elsewhere.path().join("Photos.rawmakase").exists());
+    // Saving the session meanwhile keeps naming it, so the next launch is
+    // not taken for a first one.
+    editor.save_session()?;
+    let saved: crate::app::session::Session =
+        serde_json::from_slice(&std::fs::read(elsewhere.path().join("session.json"))?)?;
+    assert_eq!(
+        saved.last_path,
+        Some(elsewhere.path().join("Offline.rawmakase"))
+    );
+    Ok(())
+}
+
 #[test]
 fn the_prefetched_neighbour_follows_the_direction_of_travel() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
@@ -5148,6 +5411,8 @@ fn tab_hides_develops_side_panels_and_the_photo_takes_their_room() {
         crate::app::session::Session::default(),
         Some(session.clone()),
     );
+    // The first launch's catalog opens first, in the Library.
+    settle_catalog(&mut e, &ctx);
     e.module = Module::Develop;
     e.onboarding.visible = false;
     // Panels take their width in the first frames.
@@ -5173,7 +5438,8 @@ fn tab_hides_develops_side_panels_and_the_photo_takes_their_room() {
         serde_json::from_slice(&std::fs::read(&session).unwrap()).unwrap();
     assert_eq!(saved.panels, e.panels);
     assert!(saved.panels.library.shown(WorkspacePanel::Left));
-    // Shift+Tab hides the filmstrip and status bar too; again shows everything.
+    // Shift+Tab hides the filmstrip and status bar too; again brings back
+    // what it hid, the filmstrip, and Tab then the sides.
     panel_frame(
         &mut e,
         key_down(egui::Key::Tab, egui::Modifiers::SHIFT),
@@ -5185,6 +5451,14 @@ fn tab_hides_develops_side_panels_and_the_photo_takes_their_room() {
     panel_frame(
         &mut e,
         key_down(egui::Key::Tab, egui::Modifiers::SHIFT),
+        FocusedButton::No,
+    );
+    panel_frame(&mut e, vec![], FocusedButton::No);
+    assert!(e.panel_shown(WorkspacePanel::Filmstrip));
+    assert!(!e.panel_shown(WorkspacePanel::Left));
+    panel_frame(
+        &mut e,
+        key_down(egui::Key::Tab, egui::Modifiers::NONE),
         FocusedButton::No,
     );
     panel_frame(&mut e, vec![], FocusedButton::No);
@@ -5272,13 +5546,18 @@ fn the_library_info_panel_stays_while_a_field_in_it_cannot_be_saved() -> anyhow:
     Ok(())
 }
 #[test]
-fn a_click_on_a_window_edge_hides_and_shows_its_panel() {
-    use super::panels::WorkspacePanel;
+fn the_bars_panel_buttons_hide_and_show_their_panels() {
+    use super::panels::{WorkspacePanel, toggle_id};
     let ctx = egui::Context::default();
     let mut e = Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
     e.module = Module::Develop;
     e.onboarding.visible = false;
-    let click = |e: &mut Editor, at: Pos2| {
+    let click = |e: &mut Editor, panel: WorkspacePanel| {
+        let at = ctx
+            .read_response(toggle_id(panel))
+            .expect("the bar draws the panel's button")
+            .rect
+            .center();
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
             button: egui::PointerButton::Primary,
@@ -5290,16 +5569,30 @@ fn a_click_on_a_window_edge_hides_and_shows_its_panel() {
         panel_frame(e, vec![button(false)], FocusedButton::No);
     };
     panel_frame(&mut e, vec![], FocusedButton::No);
-    let left = Pos2::new(4., 400.);
-    click(&mut e, left);
+    click(&mut e, WorkspacePanel::Left);
     assert!(!e.panel_shown(WorkspacePanel::Left));
     assert!(e.panel_shown(WorkspacePanel::Right));
-    click(&mut e, left);
+    click(&mut e, WorkspacePanel::Left);
     assert!(e.panel_shown(WorkspacePanel::Left));
-    click(&mut e, Pos2::new(1196., 400.));
+    click(&mut e, WorkspacePanel::Right);
     assert!(!e.panel_shown(WorkspacePanel::Right));
-    click(&mut e, Pos2::new(600., 796.));
+    click(&mut e, WorkspacePanel::Filmstrip);
     assert!(!e.panel_shown(WorkspacePanel::Filmstrip));
+    // A button clicked keeps no focus that would take Tab from the panels.
+    panel_frame(
+        &mut e,
+        key_down(egui::Key::Tab, egui::Modifiers::NONE),
+        FocusedButton::No,
+    );
+    assert!(
+        !e.panel_shown(WorkspacePanel::Left),
+        "Tab hid the left panel"
+    );
+    // The setup view has no panels, and no buttons for them.
+    e.onboarding.visible = true;
+    panel_frame(&mut e, vec![], FocusedButton::No);
+    panel_frame(&mut e, vec![], FocusedButton::No);
+    assert!(ctx.read_response(toggle_id(WorkspacePanel::Left)).is_none());
 }
 
 #[test]
@@ -5353,4 +5646,211 @@ fn long_lens_names_keep_the_develop_panel_on_screen() {
         viewport("35mm F2", &format!("Adobe ({long}, Testcam)")),
         short
     );
+}
+
+#[test]
+fn a_side_panels_edge_shows_the_resize_cursor() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos)?;
+    // Enough photos that the grid's cells reach the panels' edges.
+    for i in 0..60 {
+        std::fs::write(photos.join(format!("a{i}.ARW")), format!("fixture {i}"))?;
+    }
+    crate::catalog::Catalog::create(&path)?.add_folder(&photos)?;
+    let ctx = egui::Context::default();
+    let mut e = Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    e.library = Some(Box::new(library::Library::load(&path, ctx.clone())?));
+    e.onboarding.visible = false;
+    let frame = |e: &mut Editor, events: Vec<egui::Event>| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200., 800.))),
+                events,
+                ..Default::default()
+            },
+            |ui| e.draw(ui),
+        );
+        output.textures_delta.clear();
+        output.platform_output.cursor_icon
+    };
+    for module in [Module::Library, Module::Develop] {
+        e.module = module;
+        for _ in 0..3 {
+            frame(&mut e, vec![]);
+        }
+        let panels = match module {
+            Module::Library => ["library-sidebar", "library-info"],
+            Module::Develop => ["presets", "adjustments"],
+        };
+        for panel in panels {
+            let edge = ctx
+                .read_response(egui::Id::new(panel).with("__resize"))
+                .expect("the panel's edge")
+                .rect;
+            // Both halves of its grab area: the panel's and the one over the
+            // grid or the photo, whose cells are drawn later.
+            let half = edge.width() / 2. - 1.;
+            for at in [
+                edge.center(),
+                edge.center() - Vec2::new(half, 0.),
+                edge.center() + Vec2::new(half, 0.),
+            ] {
+                frame(&mut e, vec![egui::Event::PointerMoved(at)]);
+                let cursor = frame(&mut e, vec![egui::Event::PointerMoved(at)]);
+                assert!(
+                    matches!(
+                        cursor,
+                        egui::CursorIcon::ResizeHorizontal
+                            | egui::CursorIcon::ResizeEast
+                            | egui::CursorIcon::ResizeWest
+                    ),
+                    "{panel} at {at:?}: {cursor:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_zoom_chosen_in_the_librarys_navigator_opens_the_loupe_at_it() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos)?;
+    for name in ["a.ARW", "b.ARW"] {
+        std::fs::write(photos.join(name), name)?;
+    }
+    crate::catalog::Catalog::create(&path)?.add_folder(&photos)?;
+    let ctx = egui::Context::default();
+    let mut e = Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    e.library = Some(Box::new(library::Library::load(&path, ctx)?));
+    e.module = Module::Library;
+    assert!(!e.library.as_ref().unwrap().loupe_open());
+
+    // Nothing selected: 100% opens the first photo shown, at 100%.
+    e.library_zoom(navigator::Change::Level(1.));
+    let library = e.library.as_ref().unwrap();
+    assert!(library.loupe_open());
+    assert!(library.selected().is_some());
+    assert!(e.view.zoom.on);
+    assert_eq!(e.view.zoom.level, 1.);
+
+    // Fit from the Loupe stays in it, fitted.
+    e.library_zoom(navigator::Change::Level(0.));
+    assert!(e.library.as_ref().unwrap().loupe_open());
+    assert!(!e.view.zoom.on);
+
+    // A click in the preview zooms in on that spot.
+    e.library_zoom(navigator::Change::Inspect([0.25, 0.75]));
+    assert!(e.view.zoom.on);
+    assert_eq!(e.view.zoom.pan, [0.25, 0.75]);
+    Ok(())
+}
+
+#[test]
+fn side_panels_stop_where_their_contents_stop() -> anyhow::Result<()> {
+    // Dragged narrower than its contents, a panel was painted only that wide
+    // but laid out as wide as them: the strip between showed the window's
+    // black. Each one stops at its minimum, which its contents fit.
+    use super::workspace::{ADJUSTMENTS_MIN, LIBRARY_INFO_MIN, LIBRARY_SIDEBAR_MIN, PRESETS_MIN};
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos)?;
+    std::fs::write(photos.join("a.ARW"), b"fixture")?;
+    crate::catalog::Catalog::create(&path)?.add_folder(&photos)?;
+    let ctx = egui::Context::default();
+    let mut e = Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    e.library = Some(Box::new(library::Library::load(&path, ctx.clone())?));
+    e.onboarding.visible = false;
+    let frame = |e: &mut Editor, events: Vec<egui::Event>| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200., 800.))),
+                events,
+                ..Default::default()
+            },
+            |ui| e.draw(ui),
+        );
+        output.textures_delta.clear();
+    };
+    let button = |at: Pos2, pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    for (module, panel, outward, min) in [
+        (Module::Develop, "presets", 0., PRESETS_MIN),
+        (Module::Develop, "adjustments", 1200., ADJUSTMENTS_MIN),
+        (Module::Library, "library-sidebar", 0., LIBRARY_SIDEBAR_MIN),
+        (Module::Library, "library-info", 1200., LIBRARY_INFO_MIN),
+    ] {
+        e.module = module;
+        for _ in 0..3 {
+            frame(&mut e, vec![]);
+        }
+        let edge = |ctx: &egui::Context| {
+            ctx.read_response(egui::Id::new(panel).with("__resize"))
+                .expect("the panel's edge")
+                .rect
+                .center()
+                .x
+        };
+        let start = Pos2::new(edge(&ctx), 400.);
+        frame(&mut e, vec![egui::Event::PointerMoved(start)]);
+        frame(&mut e, vec![button(start, true)]);
+        // Mid-drag, as far as it goes: laid out at its minimum, as painted.
+        let to = Pos2::new(outward, start.y);
+        for _ in 0..3 {
+            frame(&mut e, vec![egui::Event::PointerMoved(to)]);
+        }
+        let laid_out = (edge(&ctx) - outward).abs();
+        assert!(
+            (laid_out - min).abs() <= 1.,
+            "{panel}: laid out {laid_out}, painted {min}"
+        );
+        frame(&mut e, vec![button(to, false)]);
+        for _ in 0..2 {
+            frame(&mut e, vec![]);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_change_still_waiting_for_the_undo_log_forgets_a_removed_folders_photos() -> anyhow::Result<()>
+{
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("photos.rawmakase");
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos)?;
+    std::fs::write(photos.join("a.ARW"), b"fixture")?;
+    crate::catalog::Catalog::create(&path)?.add_folder(&photos)?;
+    let ctx = egui::Context::default();
+    let mut editor =
+        Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+    editor.library = Some(Box::new(library::Library::load(&path, ctx)?));
+    let library = editor.library.as_mut().unwrap();
+    let a = library.session.photos[0].id;
+    let folders = library.session.folders.iter().map(|f| f.id).collect();
+    // A change made, its command not yet in the undo log, when the folder goes:
+    // the flush before removing puts it there, to be purged with the photos.
+    library.edit_descriptive(
+        &[a],
+        crate::catalog_session::DescriptiveEdit::AddKeywords(vec![vec!["Trip".into()]]),
+    )?;
+    editor.remove_folders(&library::FolderRemoval {
+        catalog: crate::catalog::CatalogLocation::File(path),
+        name: "photos".into(),
+        folders,
+        photos: 1,
+    });
+    editor.sync_undo();
+    // Its id may be the next photo's: nothing may undo onto it.
+    assert!(!editor.undo_log.can_undo());
+    Ok(())
 }

@@ -372,7 +372,7 @@ impl Editor {
                 self.view.shortcuts = true;
                 self.preferences.open = false;
             }
-            if ui.button("Setup Assistant…").clicked() {
+            if ui.button("Import from Lightroom").clicked() {
                 self.preferences.open = false;
                 self.open_onboarding();
             }

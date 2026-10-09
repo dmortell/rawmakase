@@ -26,6 +26,12 @@ macro_rules! lightroom_filename {
 pub(in crate::catalog) use lightroom_filename;
 
 impl Catalog {
+    /// The Lightroom catalogs this catalog was imported from, by the paths
+    /// they were imported from.
+    pub fn lightroom_sources(&self) -> Result<Vec<PathBuf>> {
+        let paths: Vec<String> = self.db.read(sql!("SELECT path FROM sources"), &[])?;
+        Ok(paths.into_iter().map(PathBuf::from).collect())
+    }
     /// Catalogs imported before keyword export options were kept still hold
     /// the original Lightroom catalog; copy them once, so an export leaves
     /// out the keywords Lightroom would.

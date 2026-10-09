@@ -9,23 +9,15 @@ use eframe::egui::{self, Vec2};
 use std::collections::HashSet;
 
 impl Library {
-    /// The left panel; without `navigator` when the editor shows its own,
-    /// as for a RAW in the Loupe.
-    pub(crate) fn sidebar(&mut self, ui: &mut egui::Ui, navigator: bool) -> Action {
+    /// The left panel's catalog, folders and collections; the editor draws
+    /// the Navigator above them.
+    pub(crate) fn sidebar(&mut self, ui: &mut egui::Ui) -> Action {
         let palette = theme::palette(ui.ctx());
         let mut action = Action::None;
         ui.spacing_mut().item_spacing.y = 0.;
         egui::ScrollArea::vertical()
             .id_salt("library-sources")
             .show(ui, |ui| {
-                if navigator {
-                    let photo = self
-                        .selected()
-                        .and_then(|id| self.photo(id))
-                        .and_then(|p| self.texture(p))
-                        .map(|t| (t.id(), t.size_vec2()));
-                    crate::app::navigator::navigator(ui, photo, None, None);
-                }
                 section(ui, "Catalog", false, |ui| {
                     let offline = self.session.photos.len() - self.available_count();
                     let all = self.filters.folder_scope.is_none()
@@ -146,6 +138,14 @@ impl Library {
                                 Some(TreeAction::RelinkFolder(id)) => {
                                     action = Action::RelinkFolder(id)
                                 }
+                                Some(TreeAction::Remove(name, folders, photos)) => {
+                                    self.removal_request = Some(super::FolderRemoval {
+                                        catalog: self.session.catalog.location().clone(),
+                                        name,
+                                        folders,
+                                        photos,
+                                    })
+                                }
                                 None => {}
                             }
                         }
@@ -195,6 +195,14 @@ impl Library {
                 });
             });
         action
+    }
+    /// What the Navigator shows outside the Loupe: the selected photo's
+    /// preview.
+    pub(in crate::app) fn selected_preview(&self) -> Option<crate::app::navigator::Photo> {
+        self.selected()
+            .and_then(|id| self.photo(id))
+            .and_then(|p| self.texture(p))
+            .map(|t| (t.id(), t.size_vec2()))
     }
     /// Shows collection `id`'s photos; the filter bar still applies.
     pub(super) fn select_collection(&mut self, id: crate::catalog::CollectionId) {

@@ -49,6 +49,8 @@ pub(crate) struct Editor {
     solo: std::collections::BTreeSet<String>,
     /// The panels each module shows (Tab, Shift+Tab, F6–F8).
     panels: panels::WorkspacePanels,
+    /// What the last Tab or Shift+Tab hid, and in which module.
+    tabbed: Option<(Module, panels::Tabbed)>,
     onboarding: onboarding::Onboarding,
     onboarding_done: bool,
     preferences: preferences::Preferences,
@@ -66,6 +68,13 @@ pub(crate) struct Editor {
     restore: Option<CatalogPlace>,
     /// A photo from outside the Library to open once the catalog is ready.
     pending_photo: Option<PendingPhoto>,
+    /// The window's main area this frame (grid, photo or setup), which files
+    /// dragged over the window are dropped into.
+    drop_area: Option<egui::Rect>,
+    /// The catalog or photo the session last named, kept there while it
+    /// can't be opened (a catalog on an unplugged drive): saving the session
+    /// meanwhile must not make the next launch a first one.
+    last_path: Option<PathBuf>,
     /// Cancels the prefetch started for the photo on screen.
     prefetch_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Preferences > Performance's demosaic, for every full-size decode.
@@ -193,7 +202,13 @@ impl Editor {
                 .insert(egui::TextStyle::Small, egui::FontId::proportional(11.));
         });
         // Only a real session (not an isolated test) shows first-run setup.
-        let show_onboarding = !session.onboarding_done && session_file.is_some();
+        // Shown on a first launch only to bring over Lightroom's catalog,
+        // profiles and presets, when there are some; otherwise first-run
+        // setup is done, and the empty Library says how to add photos.
+        let show_onboarding =
+            !session.onboarding_done && session_file.is_some() && onboarding::lightroom_here();
+        let onboarding_done =
+            session.onboarding_done || (session_file.is_some() && !show_onboarding);
         let place = CatalogPlace::of(&session);
         // Only a real session checks GitHub, not an isolated test.
         let updates = updates::Updates::new(&session, session_file.is_some().then_some(ctx));
@@ -211,6 +226,9 @@ impl Editor {
                 .map(|dir| (dir.to_path_buf(), ctx)),
         );
         let last = session.last_path.clone().filter(|p| p.exists());
+        // A first launch opens the default catalog. A catalog used before that
+        // is missing now (an unplugged drive) is not replaced by it.
+        let first_catalog = session.last_path.is_none() && session_file.is_some();
         let (tx, rx) = mpsc::channel();
         let loader = worker::Loader::new(tx.clone(), ctx.clone());
         let renderer = worker::renderer_with_backend(tx.clone(), ctx.clone(), backend);
@@ -253,8 +271,9 @@ impl Editor {
             collapsed: session.collapsed.clone(),
             solo: session.solo.clone(),
             panels: session.panels,
+            tabbed: None,
             onboarding: onboarding::Onboarding::new(show_onboarding),
-            onboarding_done: session.onboarding_done,
+            onboarding_done,
             preferences: Default::default(),
             updates,
             #[cfg(feature = "telemetry")]
@@ -276,6 +295,8 @@ impl Editor {
             saved_place: place,
             saved_layout: session.library_layout.clone(),
             pending_photo: None,
+            drop_area: None,
+            last_path: session.last_path.clone(),
             prefetch_cancel: Default::default(),
             demosaic: session.demosaic,
             status: "Pick a photo in the Library to begin".into(),
@@ -310,6 +331,8 @@ impl Editor {
             path => {
                 if let Some(last) = last {
                     app.open(last);
+                } else if first_catalog {
+                    app.open_default_catalog(ctx);
                 }
                 if let Some(path) = path {
                     app.open(path);
@@ -383,6 +406,7 @@ impl Editor {
                 path.clone()
             })
             .or_else(|| self.document.path.clone())
+            .or_else(|| self.last_path.clone())
     }
 }
 /// Where the Library was: its folder or collection, the photo selected (or open
@@ -432,6 +456,8 @@ enum Modal {
     RenamePreset(user_presets::PresetRename),
     /// The virtual copy waiting for the user to confirm its removal.
     RemoveCopy(PhotoId),
+    /// The folder waiting for the user to confirm its removal from the catalog.
+    RemoveFolder(library::FolderRemoval),
     /// Photos waiting for the user to confirm Read Metadata from Files.
     ReadMetadata(Vec<PhotoId>),
     /// A folder change waiting for the user's answer.

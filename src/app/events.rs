@@ -131,7 +131,7 @@ impl Editor {
                 Event::OnboardingScanned { generation, found } => {
                     self.onboarding_scanned(generation, *found)
                 }
-                Event::Imported(summary) => self.imported(summary, ctx),
+                Event::Imported(summary) => self.imported(*summary, ctx),
                 Event::Synced(result) => self.synced(*result),
                 Event::PresetSave(p) => {
                     self.activity.finish_dialog();
@@ -321,6 +321,7 @@ impl Editor {
         self.preferences.locations = None;
         match result {
             Ok(mut l) => {
+                self.onboarding.catalog_error = None;
                 self.load.invalidate();
                 // The photo being left is Previous, as when moving between photos.
                 if let Some(settings) = self.current_settings() {
@@ -331,10 +332,12 @@ impl Editor {
                 self.presets.clear_document();
                 self.view.clear_document();
                 self.selection.clear_catalog();
-                self.status = if l.message.is_empty() {
-                    "Catalog ready. Offline photos remain in the library; locate their folders to develop them.".into()
-                } else {
+                self.status = if !l.message.is_empty() {
                     l.message.clone()
+                } else if l.session.photos.is_empty() {
+                    "Catalog ready. Add a folder of photos to begin.".into()
+                } else {
+                    "Catalog ready. Offline photos remain in the library; locate their folders to develop them.".into()
                 };
                 // Commands never cross catalogs; reloading this one (after
                 // adding or relinking a folder) keeps them.
@@ -342,6 +345,10 @@ impl Editor {
                     old.session.catalog.location() == l.session.catalog.location()
                 });
                 if !reloaded {
+                    // A folder chosen for removal belongs to the catalog left.
+                    if matches!(self.modal, Some(super::Modal::RemoveFolder(_))) {
+                        self.modal = None;
+                    }
                     self.undo_log.clear();
                     // Photo ids belong to their catalog, and so does the reference.
                     self.clear_reference();
@@ -377,6 +384,7 @@ impl Editor {
             }
             Err(e) => {
                 self.pending_photo = None;
+                self.onboarding.catalog_error = Some(e.clone());
                 self.status = format!("Catalog operation failed: {e}");
             }
         }

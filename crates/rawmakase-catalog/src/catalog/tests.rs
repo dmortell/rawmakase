@@ -1438,3 +1438,112 @@ fn raw_cameras_leave_out_cameras_seen_only_in_jpegs() -> Result<()> {
     assert_eq!(cat.raw_cameras()?, ["ILCE-7M2"]);
     Ok(())
 }
+
+#[test]
+fn removing_folders_leaves_their_files_and_no_rows_behind() -> Result<()> {
+    use anyhow::Context;
+    let dir = tempfile::tempdir()?;
+    let photos = dir.path().join("photos");
+    std::fs::create_dir_all(photos.join("trip/day2"))?;
+    for file in ["a.ARW", "trip/b.ARW", "trip/day2/c.ARW"] {
+        std::fs::write(photos.join(file), format!("synthetic {file}"))?;
+    }
+    let mut cat = Catalog::create(&dir.path().join("Photos.rawmakase"))?;
+    cat.add_folder(&photos)?;
+    let id = |cat: &Catalog, name: &str| -> Result<PhotoId> {
+        Ok(cat
+            .photos()?
+            .into_iter()
+            .find(|p| p.filename == name && p.master.is_none())
+            .context("photo")?
+            .id)
+    };
+    let b = id(&cat, "b.ARW")?;
+    let copy = cat.create_virtual_copy(b)?;
+    cat.add_keywords(&[b, copy], &[vec!["City".to_string()]])?;
+    let folder = |cat: &Catalog, relative: &str| -> Result<FolderId> {
+        Ok(cat
+            .folders()?
+            .into_iter()
+            .find(|f| f.relative.trim_end_matches('/') == relative)
+            .context("folder")?
+            .id)
+    };
+    let trip = [folder(&cat, "trip")?, folder(&cat, "trip/day2")?];
+
+    let removed = cat.remove_folders(&trip)?;
+    assert!(removed.contains(&b) && removed.contains(&copy));
+    assert_eq!(removed.len(), 3, "b, its copy and c");
+    let left: Vec<String> = cat.photos()?.into_iter().map(|p| p.filename).collect();
+    assert_eq!(left, ["a.ARW"]);
+    assert_eq!(cat.folders()?.len(), 1);
+    assert_eq!(cat.roots()?.len(), 1, "the root still has a folder");
+    for file in ["a.ARW", "trip/b.ARW", "trip/day2/c.ARW"] {
+        assert!(photos.join(file).is_file(), "{file} stays on disk");
+    }
+    // No row anywhere still names a removed photo.
+    let db = cat.db_for_tests();
+    let tables: Vec<String> = db
+        .prepare("SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c WHERE m.type='table' AND c.name='photo'")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert!(tables.contains(&"photo_keywords".to_string()));
+    for table in &tables {
+        let orphans: i64 = db.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE photo NOT IN (SELECT id FROM photos)"),
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(orphans, 0, "{table} keeps a removed photo");
+    }
+
+    // The root's last folder takes the root with it.
+    let rest: Vec<FolderId> = cat.folders()?.into_iter().map(|f| f.id).collect();
+    assert_eq!(cat.remove_folders(&rest)?.len(), 1);
+    assert!(cat.photos()?.is_empty());
+    assert!(cat.roots()?.is_empty());
+    // And the folder can be added again.
+    assert_eq!(cat.add_folder(&photos)?, 3);
+    Ok(())
+}
+
+#[test]
+fn an_imported_catalog_names_the_lightroom_catalog_it_came_from() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = dir.path().join("Lightroom Catalog.lrcat");
+    fixture(&source)?;
+    let imported = import_lightroom(&source, &dir.path().join("Imported.rawmakase"))?;
+    assert_eq!(Catalog::open(&imported)?.lightroom_sources()?, [source]);
+    let made = Catalog::create(&dir.path().join("Photos.rawmakase"))?;
+    assert!(made.lightroom_sources()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_removed_folder_forgets_where_it_was_located() -> Result<()> {
+    use anyhow::Context;
+    let dir = tempfile::tempdir()?;
+    let photos = dir.path().join("photos");
+    std::fs::create_dir_all(photos.join("trip"))?;
+    std::fs::write(photos.join("a.ARW"), "a")?;
+    std::fs::write(photos.join("trip/b.ARW"), "b")?;
+    let elsewhere = dir.path().join("external/trip");
+    std::fs::create_dir_all(&elsewhere)?;
+    let mut cat = Catalog::create(&dir.path().join("Photos.rawmakase"))?;
+    cat.add_folder(&photos)?;
+    let trip = cat
+        .folders()?
+        .into_iter()
+        .find(|f| f.relative.trim_end_matches('/') == "trip")
+        .context("trip")?
+        .id;
+    // Located elsewhere on this computer, then removed; its root stays.
+    cat.relink_folder(trip, &elsewhere)?;
+    cat.remove_folders(&[trip])?;
+    assert_eq!(cat.roots()?.len(), 1);
+    // Added again where it is: not refused as being elsewhere.
+    let added = cat.import_folder(&photos.join("trip"), &Default::default(), &[])?;
+    assert!(added.conflicts.is_empty(), "{:?}", added.conflicts);
+    assert_eq!(added.added, 1);
+    Ok(())
+}

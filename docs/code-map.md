@@ -196,8 +196,8 @@ recipes and the installed preset collection; they do not own the renderer.
 | [catalog/location.rs](../crates/rawmakase-catalog/src/catalog/location.rs) | `CatalogLocation`: where a catalog is, as the app names and reopens it. A file is the only kind; file-only behaviour (its size, revealing it, `session.json`) matches on `File`. |
 | [catalog/edit_rows.rs](../crates/rawmakase-catalog/src/catalog/edit_rows.rs) | The only writes to a photo's edit rows: a checked save or clear, an exact copy for virtual copies, and removal with a copy. A test fails on any other SQL that writes them. |
 | [catalog/develop_history.rs](../crates/rawmakase-catalog/src/catalog/develop_history.rs) | A photo's Develop History (`model::saved_history`), stored in the same transaction as its edit; large settings are stored once per History. |
-| [catalog/copies.rs](../crates/rawmakase-catalog/src/catalog/copies.rs) | Virtual copies: create, set as master, rename, remove. |
-| [catalog/ingest.rs](../crates/rawmakase-catalog/src/catalog/ingest.rs) | Adding a folder of photos, with the edits earlier releases saved beside them; each folder found is matched with this computer's locations. |
+| [catalog/copies.rs](../crates/rawmakase-catalog/src/catalog/copies.rs) | Virtual copies: create, set as master, rename, remove; deleting a photo's rows, which removing a folder shares. |
+| [catalog/ingest.rs](../crates/rawmakase-catalog/src/catalog/ingest.rs) | Adding a folder of photos, with the edits earlier releases saved beside them; each folder found is matched with this computer's locations. Removing folders with their photos (files untouched). |
 | [catalog/locations.rs](../crates/rawmakase-catalog/src/catalog/locations.rs) | Folder locations per computer: the computer id, logical folder paths, adopting legacy mappings on open, resolving, relinking and clearing. |
 | [models.rs](../crates/rawmakase-catalog/src/catalog/models.rs) | Folder, photo, collection and saved-edit records crossing the catalog API. The metadata values they carry are in [metadata.rs](../crates/rawmakase-model/src/metadata.rs). |
 | [schema.postgres.sql](../crates/rawmakase-catalog/src/catalog/schema.postgres.sql) | The same tables in Postgres types, kept in step with `schema.sql` by a test; CI's "Portable catalog SQL" job prepares every portable statement against it. No release opens a Postgres catalog. |
@@ -234,7 +234,7 @@ above rather than implementing SQL, file formats or pixel processing.
 | [dialogs.rs](../src/app/dialogs.rs) | Typed dialog intents and native file/folder choosers. |
 | [treatment.rs](../src/app/treatment.rs) | The Basic panel's Treatment (and V), the B&W panel's Auto and the "Apply auto mix when first converting" preference, each change one History step. |
 | [auto.rs](../src/app/auto.rs) | Runs Auto (the Basic panel's Auto button, the WB menu, Ctrl/Cmd+Shift+U) off the UI thread and applies the estimate as one History step. |
-| [catalog.rs](../src/app/catalog.rs) | UI workflows for native catalogs, Lightroom import, folder addition, relinking and applying imported edits. |
+| [catalog.rs](../src/app/catalog.rs) | UI workflows for native catalogs (including the default one in the data folder), Lightroom import, folder addition, relinking and applying imported edits. |
 | [folder_locations.rs](../src/app/folder_locations.rs) | Preferences › Catalog › Folder locations, and the questions changing a root or adding a folder can raise. |
 | [bulk_import.rs](../src/app/bulk_import.rs) | Importing camera profiles, lens profiles and presets from chosen files or whole folders, reporting what could not be imported. |
 | [upright.rs](../src/app/upright.rs) | Runs the Transform panel's Upright analysis off the UI thread. |
@@ -254,7 +254,7 @@ above rather than implementing SQL, file formats or pixel processing.
 | [preview_build.rs](../src/app/preview_build.rs) | Build Standard-Sized Previews: the selection's previews rendered as export renders them, on a background worker, into the preview cache; their identity, progress, Discard and Clear. |
 | [preferences.rs](../src/app/preferences.rs) | Preferences window: app, catalog, profile, cache and display settings. |
 | [raw_defaults.rs](../src/app/raw_defaults.rs) | Preferences' Raw Defaults block, and keeping the open unedited photo and the Library's previews in step with the defaults. |
-| [onboarding.rs](../src/app/onboarding.rs) | First-run setup: a catalog, then optional Lightroom profiles and presets. |
+| [onboarding.rs](../src/app/onboarding.rs) | First-run setup: photos added to the default catalog (or a Lightroom catalog imported), then optional Lightroom profiles and presets; and the Library's start while it has no photos or no catalog. |
 | [theme.rs](../src/app/theme.rs), [icons.rs](../src/app/icons.rs) | Interface colors (Lightroom's neutral grays, with fastframe-theme's palettes) and the Lucide icon set. |
 | [inspector.rs](../src/app/inspector.rs) | Histogram, adjustment controls and export settings. |
 | [inspector/lens_profile.rs](../src/app/inspector/lens_profile.rs) | Lens Corrections' Setup, Make, Model and Profile menus over the imported lens profiles. |

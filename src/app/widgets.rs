@@ -1311,6 +1311,9 @@ fn control_radius(height: f32) -> f32 {
 /// minimum.
 const SEGMENT_PADDING: f32 = 12.;
 const SEGMENT_MIN_PADDING: f32 = 8.;
+/// What the padding gives way to, at the smaller label size, before the
+/// control grows wider than its place (and past the panel holding it).
+const SEGMENT_TIGHT_PADDING: f32 = 3.;
 /// The pill's gap to the track.
 const SEGMENT_INSET: f32 = 2.;
 fn label_widths(ui: &egui::Ui, labels: &[&str], font: f32) -> Vec<f32> {
@@ -1332,18 +1335,19 @@ fn segments_width(ui: &egui::Ui, labels: &[&str], style: &SegmentStyle) -> f32 {
         .fold(0., f32::max);
     labels.len() as f32 * (widest + 2. * SEGMENT_PADDING) + 2. * SEGMENT_INSET
 }
-/// The narrowest track that keeps the minimum padding: each segment only as
-/// wide as its own label, at the label size one point down.
+/// The narrowest track: each segment only as wide as its own label, at the
+/// label size one point down, with the tightest padding.
 fn tightest_segments_width(ui: &egui::Ui, labels: &[&str], style: &SegmentStyle) -> f32 {
     label_widths(ui, labels, style.font - 1.)
         .into_iter()
-        .map(|width| width + 2. * SEGMENT_MIN_PADDING)
+        .map(|width| width + 2. * SEGMENT_TIGHT_PADDING)
         .sum::<f32>()
         + 2. * SEGMENT_INSET
 }
 /// Segment widths and label size for a track `inner` wide: equal widths when
 /// every label gets its minimum padding, else each label's own width with the
-/// leftover shared out, at a point smaller if even that does not fit.
+/// leftover shared out, at a point smaller if even that does not fit, with
+/// the padding narrowed as far as the tightest.
 fn segment_layout(
     ui: &egui::Ui,
     labels: &[&str],
@@ -1357,13 +1361,13 @@ fn segment_layout(
         if inner / count >= widest + 2. * SEGMENT_MIN_PADDING {
             return (vec![inner / count; labels.len()], font);
         }
-        let needed: f32 = widths.iter().map(|w| w + 2. * SEGMENT_MIN_PADDING).sum();
+        let labels_width: f32 = widths.iter().sum();
+        let needed = labels_width + count * 2. * SEGMENT_MIN_PADDING;
         if needed <= inner || font < style.font {
-            let extra = (inner - needed).max(0.) / count;
-            let widths = widths
-                .iter()
-                .map(|w| w + 2. * SEGMENT_MIN_PADDING + extra)
-                .collect();
+            let padding = ((inner - labels_width) / (2. * count))
+                .clamp(SEGMENT_TIGHT_PADDING, SEGMENT_MIN_PADDING);
+            let extra = (inner - labels_width - count * 2. * padding).max(0.) / count;
+            let widths = widths.iter().map(|w| w + 2. * padding + extra).collect();
             return (widths, font);
         }
     }
@@ -2054,5 +2058,47 @@ mod slider_tests {
             .expect("Tab reaches the number field");
         assert_eq!(step_exposure(5., tabs, 3), 5.);
         assert_eq!(step_exposure(6.5, tabs, 3), 6.5);
+    }
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::*;
+
+    #[test]
+    fn segments_narrow_their_padding_rather_than_outgrow_their_place() {
+        // The Navigator's zoom levels in a narrow panel once grew past it,
+        // where the panel was no longer painted.
+        let options = [
+            (0, "Fit"),
+            (1, "50%"),
+            (2, "100%"),
+            (3, "200%"),
+            (4, "400%"),
+        ];
+        let ctx = egui::Context::default();
+        let mut drawn = None;
+        let mut place = 0.;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let labels: Vec<&str> = options.iter().map(|(_, l)| *l).collect();
+            let at_min_padding = label_widths(ui, &labels, COMPACT_SEGMENTS.font - 1.)
+                .iter()
+                .map(|w| w + 2. * SEGMENT_MIN_PADDING)
+                .sum::<f32>()
+                + 2. * SEGMENT_INSET;
+            // Narrower than the minimum padding allows, wider than the tightest.
+            place = at_min_padding - 10.;
+            assert!(place >= tightest_segments_width(ui, &labels, &COMPACT_SEGMENTS));
+            ui.allocate_ui(Vec2::new(place, 40.), |ui| {
+                ui.set_max_width(place);
+                let mut value = 0;
+                let before = ui.cursor().left();
+                segmented(ui, &mut value, &options, place);
+                drawn = Some(ui.min_rect().right() - before);
+            });
+        });
+        output.textures_delta.clear();
+        let drawn = drawn.expect("drawn");
+        assert!(drawn <= place + 0.5, "{drawn} wide in {place}");
     }
 }
