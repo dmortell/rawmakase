@@ -156,7 +156,7 @@ pub(super) struct PreviewState {
     /// is active, for its loupe.
     pub(super) samples: Option<image::RgbImage>,
     pub(super) region_samples: Option<image::RgbImage>,
-    /// Whether a render with loupe samples was asked for since the selector opened.
+    /// Whether renders keep their samples: while a loupe or the readout reads them.
     pub(super) samples_requested: bool,
     /// The recipe the shown samples were rendered with, and that of the render in
     /// flight.
@@ -402,6 +402,38 @@ impl PreviewState {
         self.samples_requested = false;
         self.stand_in = None;
         self.embedded = false;
+    }
+    /// Starts keeping the shown pixels, and whether a render must be asked for
+    /// them: not when those kept from an earlier hover still match what is shown,
+    /// with no render landed or on its way since.
+    pub(super) fn ask_for_samples(&mut self) -> bool {
+        if self.samples_requested {
+            return false;
+        }
+        self.samples_requested = true;
+        // A 100% region's render keeps only the region's pixels.
+        let kept = match self.mode {
+            TextureMode::Whole => self.samples.is_some(),
+            TextureMode::Region(_) => self.region_samples.is_some(),
+        };
+        !kept || self.task.is_running()
+    }
+    /// Stops keeping the pixels of later renders. Those shown stay until one lands,
+    /// so pointing back at an unchanged photo needs no render.
+    pub(super) fn stop_asking_for_samples(&mut self) {
+        self.samples_requested = false;
+    }
+    /// Keeps a landed render's pixels while they are asked for. Otherwise drops
+    /// all kept ones, the photo's and its region's, which no longer match it.
+    pub(super) fn keep_samples(&mut self, region: bool, samples: Option<image::RgbImage>) {
+        if !self.samples_requested {
+            self.samples = None;
+            self.region_samples = None;
+        } else if region {
+            self.region_samples = samples;
+        } else {
+            self.samples = samples;
+        }
     }
     /// Whether a live render of the photo is shown.
     pub(crate) fn live(&self) -> bool {

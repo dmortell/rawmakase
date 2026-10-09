@@ -168,6 +168,43 @@ mod tests {
     }
 
     #[test]
+    fn pointing_back_at_an_unchanged_photo_renders_nothing() {
+        let ctx = eframe::egui::Context::default();
+        let mut e = Editor::with_context(&ctx, None, crate::app::session::Session::default(), None);
+        let pixel = || image::RgbImage::from_pixel(1, 1, image::Rgb([255, 255, 255]));
+        // The first hover asks a render for the pixels.
+        assert!(e.preview.ask_for_samples());
+        assert!(!e.preview.ask_for_samples());
+        e.preview.keep_samples(false, Some(pixel()));
+        e.preview.keep_samples(true, Some(pixel()));
+        // Off the photo and back, with nothing rendered since: the pixels kept still
+        // show it.
+        e.preview.stop_asking_for_samples();
+        assert!(e.preview.samples.is_some() && e.preview.region_samples.is_some());
+        assert!(!e.preview.ask_for_samples());
+        // A render on its way when the pointer returns has no pixels: ask again.
+        e.preview.stop_asking_for_samples();
+        let (render, _) = e.preview.task.start();
+        assert!(e.preview.ask_for_samples());
+        e.preview.task.finish(render);
+        // One that landed while away drops them all, whole photo and region.
+        e.preview.stop_asking_for_samples();
+        e.preview.keep_samples(false, None);
+        assert!(e.preview.samples.is_none() && e.preview.region_samples.is_none());
+        assert!(e.preview.ask_for_samples());
+        // Zoomed to 100%, where renders keep only the region's pixels: those are
+        // the ones shown.
+        e.preview.mode = crate::app::state::TextureMode::Region([0, 0, 1, 1]);
+        e.preview.keep_samples(true, Some(pixel()));
+        e.preview.stop_asking_for_samples();
+        assert!(!e.preview.ask_for_samples());
+        // Back to Fit, the whole photo's pixels are needed.
+        e.preview.stop_asking_for_samples();
+        e.preview.mode = crate::app::state::TextureMode::Whole;
+        assert!(e.preview.ask_for_samples());
+    }
+
+    #[test]
     fn i_cycles_the_info_overlay_in_develop() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let photos = dir.path().join("photos");
