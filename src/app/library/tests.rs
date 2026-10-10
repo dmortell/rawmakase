@@ -363,6 +363,59 @@ fn library_opens_before_the_online_check_and_then_marks_missing_photos() -> Resu
     Ok(())
 }
 
+/// The sidebar asks for the online count every frame; it is kept, and
+/// follows photos leaving the catalog.
+#[test]
+fn the_online_count_follows_photos_removed_from_the_catalog() -> Result<()> {
+    let d = tempfile::tempdir()?;
+    for folder in ["a", "b"] {
+        std::fs::create_dir(d.path().join(folder))?;
+        std::fs::write(d.path().join(folder).join("1.ARW"), b"source")?;
+        std::fs::write(d.path().join(folder).join("2.ARW"), b"source")?;
+    }
+    let db = d.path().join("photos.rawmakase");
+    Catalog::create(&db)?.add_folder(d.path())?;
+    let mut l = Library::load(&db, egui::Context::default())?;
+    l.wait_for_availability();
+    assert_eq!(l.available_count(), 4);
+    let b: HashSet<FolderId> = l
+        .session
+        .folders
+        .iter()
+        .filter(|f| f.path.ends_with("b"))
+        .map(|f| f.id)
+        .collect();
+    assert_eq!(b.len(), 1);
+    l.remove_folders(&b, "b")?;
+    assert_eq!(l.available_count(), 2);
+    Ok(())
+}
+
+/// Once the online check is in, the Library says how many folders have no
+/// photo on this computer; a folder with one of them online is not counted.
+#[test]
+fn folders_with_no_photo_online_are_counted_once_the_check_is_in() -> Result<()> {
+    let d = tempfile::tempdir()?;
+    for folder in ["kept", "gone", "partly"] {
+        std::fs::create_dir(d.path().join(folder))?;
+        std::fs::write(d.path().join(folder).join("1.ARW"), b"source")?;
+        std::fs::write(d.path().join(folder).join("2.ARW"), b"source")?;
+    }
+    let db = d.path().join("photos.rawmakase");
+    Catalog::create(&db)?.add_folder(d.path())?;
+    std::fs::remove_dir_all(d.path().join("gone"))?;
+    std::fs::remove_file(d.path().join("partly").join("1.ARW"))?;
+    let mut l = Library::load(&db, egui::Context::default())?;
+    l.wait_for_availability();
+    assert!(
+        l.message
+            .starts_with("1 folder isn't found on this computer"),
+        "{}",
+        l.message
+    );
+    Ok(())
+}
+
 #[test]
 fn thumbnails_keep_portrait_and_landscape_proportions() {
     use super::thumbnails::fit;
